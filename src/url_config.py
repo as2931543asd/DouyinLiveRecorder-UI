@@ -63,6 +63,7 @@ def load_and_dispatch(
     line_list: list[str] = []
     url_line_list: list[str] = []
     new_url_comments: list[str] = []
+    seen_urls: set[str] = set()
 
     try:
         with open(url_config_file, "r", encoding=text_encoding, errors="ignore") as f:
@@ -107,6 +108,7 @@ def load_and_dispatch(
                             fallback_content=ini_url_content,
                         )
 
+                    seen_urls.add(url)
                     new_url_comments = [i for i in new_url_comments if url not in i]
                     if is_comment_line:
                         new_url_comments.append(url)
@@ -137,6 +139,14 @@ def load_and_dispatch(
                     url_config_file, old_str=replace_words[0], new_str=new_word,
                     start_str=start_with, fallback_content=ini_url_content,
                 )
+
+        # 已从 ini 中整行删除的直播间：借用 url_comments 作为停止信号，
+        # 让 worker 走既有的退出路径（clear_record_info 会摘掉 running_list）。
+        with runtime.state_lock:
+            running_snapshot = list(runtime.running_list)
+        for u in running_snapshot:
+            if u not in seen_urls and u not in new_url_comments:
+                new_url_comments.append(u)
 
         with runtime.state_lock:
             runtime.url_comments = new_url_comments

@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import sys
+import threading
+from collections import deque
 from pathlib import Path
 
 from loguru import logger
@@ -26,6 +28,28 @@ _FILE_FORMAT = (
     "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <7} | "
     "{name}:{function}:{line} - {message}"
 )
+
+_LOG_BUFFER: deque[dict] = deque(maxlen=300)
+_LOG_LOCK = threading.Lock()
+
+
+def _ring_sink(message) -> None:
+    record = message.record
+    entry = {
+        "time": record["time"].strftime("%H:%M:%S"),
+        "level": record["level"].name,
+        "message": record["message"],
+    }
+    with _LOG_LOCK:
+        _LOG_BUFFER.append(entry)
+
+
+def get_recent_logs(limit: int = 200) -> list[dict]:
+    with _LOG_LOCK:
+        if limit <= 0 or limit >= len(_LOG_BUFFER):
+            return list(_LOG_BUFFER)
+        return list(_LOG_BUFFER)[-limit:]
+
 
 logger.remove()
 
@@ -47,4 +71,10 @@ logger.add(
     enqueue=True,
 )
 
-__all__ = ["logger"]
+logger.add(
+    sink=_ring_sink,
+    level="INFO",
+    enqueue=True,
+)
+
+__all__ = ["logger", "get_recent_logs"]

@@ -22,6 +22,7 @@ from pydantic import BaseModel
 
 from src import runtime
 from src.config_loader import text_encoding
+from src.logger import get_recent_logs
 
 app = FastAPI()
 
@@ -71,12 +72,12 @@ async def get_status():
     recordings = []
     for rec_name in rec_snapshot:
         entry = time_snapshot.get(rec_name)
-        if entry and len(entry) >= 2:
-            rt, qa = entry[0], entry[1]
+        if entry:
+            rt, qa, url = entry[0], entry[1], entry[2]
             duration = str(now - rt).split(".")[0]
-            recordings.append({"name": rec_name, "quality": qa, "duration": duration})
+            recordings.append({"name": rec_name, "quality": qa, "duration": duration, "url": url})
         else:
-            recordings.append({"name": rec_name, "quality": "?", "duration": "0:00:00"})
+            recordings.append({"name": rec_name, "quality": "?", "duration": "0:00:00", "url": ""})
 
     return {
         "monitoring": monitoring_count,
@@ -85,6 +86,11 @@ async def get_status():
         "max_request": runtime.max_request,
         "recordings": recordings,
     }
+
+
+@app.get("/api/logs")
+async def get_logs(limit: int = 200):
+    return {"logs": get_recent_logs(limit)}
 
 
 @app.get("/api/streamers")
