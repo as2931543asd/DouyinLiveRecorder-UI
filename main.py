@@ -30,6 +30,7 @@ from src import utils
 from ffmpeg_install import (
     check_ffmpeg, ffmpeg_path, current_env_path
 )
+from webui import server as webui_server
 
 version = "v4.0.7"
 
@@ -45,7 +46,6 @@ running_list = []
 url_tuples_list = []
 url_comments = []
 text_no_repeat_url = []
-create_var = locals()
 first_start = True
 exit_recording = False
 need_update_line_list = []
@@ -62,7 +62,16 @@ rstr = r"[\/\\\:\*\？?\"\<\>\|&#.。,， ~！· ]"
 default_path = f'{script_path}/downloads'
 os.makedirs(default_path, exist_ok=True)
 file_update_lock = threading.Lock()
+state_lock = threading.Lock()
 os_type = os.name
+
+_bg_loop = asyncio.new_event_loop()
+threading.Thread(target=_bg_loop.run_forever, daemon=True).start()
+
+
+def run_coro(coro):
+    return asyncio.run_coroutine_threadsafe(coro, _bg_loop).result()
+
 clear_command = "cls" if os_type == 'nt' else "clear"
 color_obj = utils.Color()
 os.environ['PATH'] = ffmpeg_path + os.pathsep + current_env_path
@@ -233,10 +242,14 @@ def adjust_max_request() -> None:
 
 def clear_record_info(record_name: str, record_url: str) -> None:
     global monitoring
-    recording.discard(record_name)
-    if record_url in url_comments and record_url in running_list:
-        running_list.remove(record_url)
-        monitoring -= 1
+    removed = False
+    with state_lock:
+        recording.discard(record_name)
+        if record_url in url_comments and record_url in running_list:
+            running_list.remove(record_url)
+            monitoring -= 1
+            removed = True
+    if removed:
         color_obj.print_colored(f"[{record_name}]已经从录制列表中移除\n", color_obj.YELLOW)
 
 
@@ -269,7 +282,8 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
     else:
         color_obj.print_colored(f"\n{record_name} {stop_time} 直播录制出错,返回码: {return_code}\n", color_obj.RED)
 
-    recording.discard(record_name)
+    with state_lock:
+        recording.discard(record_name)
     return False
 
 
@@ -312,16 +326,16 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                         platform = '抖音直播'
                         with semaphore:
                             if 'v.douyin.com' not in record_url and '/user/' not in record_url:
-                                json_data = asyncio.run(spider.get_douyin_web_stream_data(
+                                json_data = run_coro(spider.get_douyin_web_stream_data(
                                     url=record_url,
                                     proxy_addr=proxy_address,
                                     cookies=dy_cookie))
                             else:
-                                json_data = asyncio.run(spider.get_douyin_app_stream_data(
+                                json_data = run_coro(spider.get_douyin_app_stream_data(
                                     url=record_url,
                                     proxy_addr=proxy_address,
                                     cookies=dy_cookie))
-                            port_info = asyncio.run(
+                            port_info = run_coro(
                                 stream.get_douyin_stream_url(json_data, record_quality, proxy_address))
                     else:
                         logger.error(f'{record_url} 不支持的直播地址，仅支持抖音直播')
@@ -366,11 +380,11 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                             content = f"\r{record_name} 正在直播中..."
                             print(content)
 
-                            # Select FLV source for Douyin
                             flv_url = port_info.get('flv_url')
                             codec = utils.get_query_params(flv_url, "codec") if flv_url else None
-                            if codec and codec[0] == 'h265':
-                                logger.warning("FLV is not supported for h265 codec, use HLS source instead")
+                            is_h265 = bool(codec and codec[0] == 'h265')
+                            if is_h265:
+                                logger.warning("FLV 不支持 h265 编码，改用 HLS 源并强制 TS 容器")
                                 real_url = port_info.get('record_url')
                             else:
                                 real_url = flv_url or port_info.get('record_url')
@@ -442,22 +456,16 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                     ffmpeg_command.insert(1, "-http_proxy")
                                     ffmpeg_command.insert(2, proxy_address)
 
-                                recording.add(record_name)
                                 start_record_time = datetime.datetime.now()
-                                recording_time_list[record_name] = [start_record_time, record_quality_zh]
+                                with state_lock:
+                                    recording.add(record_name)
+                                    recording_time_list[record_name] = [start_record_time, record_quality_zh]
                                 rec_info = f"\r{anchor_name} 准备开始录制视频: {full_path}"
 
                                 if show_url:
                                     logger.info(f"{platform} | {anchor_name} | 直播源地址: {real_url}")
 
-                                record_save_type = video_save_type
-
-                                # h265 codec forces TS format
-                                if port_info.get('flv_url'):
-                                    codec = utils.get_query_params(port_info['flv_url'], "codec")
-                                    if codec and codec[0] == 'h265':
-                                        logger.warning("FLV is not supported for h265 codec, use TS format instead")
-                                        record_save_type = "TS"
+                                record_save_type = "TS" if is_h265 else video_save_type
 
                                 if record_save_type == "FLV":
                                     filename = anchor_name + f'_{title_in_name}' + now + ".flv"
@@ -733,9 +741,10 @@ while True:
                 ini_URL_content = file.read().strip()
 
         if not ini_URL_content.strip():
-            input_url = input('请输入要录制的抖音直播间网址（尽量使用PC网页端的直播间地址）:\n')
-            with open(url_config_file, 'w', encoding=text_encoding) as file:
-                file.write(input_url)
+            if not os.path.isfile(url_config_file):
+                with open(url_config_file, 'w', encoding=text_encoding) as file:
+                    pass
+            print("URL_config.ini 为空，请通过 WebUI (http://localhost:8000) 添加直播间地址")
     except OSError as err:
         logger.error(f"发生 I/O 错误: {err}")
 
@@ -783,7 +792,8 @@ while True:
 
 
     try:
-        url_comments, line_list, url_line_list = [[] for _ in range(3)]
+        line_list, url_line_list = [[] for _ in range(2)]
+        new_url_comments: list = []
         with (open(url_config_file, "r", encoding=text_encoding, errors='ignore') as file):
             for origin_line in file:
                 if origin_line in line_list:
@@ -840,9 +850,9 @@ while True:
                     if url_host == 'live.douyin.com':
                         url = update_file(url_config_file, old_str=url, new_str=url.split('?')[0])
 
-                    url_comments = [i for i in url_comments if url not in i]
+                    new_url_comments = [i for i in new_url_comments if url not in i]
                     if is_comment_line:
-                        url_comments.append(url)
+                        new_url_comments.append(url)
                     else:
                         new_line = (quality, url, name)
                         url_tuples_list.append(new_line)
@@ -864,24 +874,27 @@ while True:
                     new_word = replace_words[1]
                 update_file(url_config_file, old_str=replace_words[0], new_str=new_word, start_str=start_with)
 
+        with state_lock:
+            url_comments = new_url_comments
+
         text_no_repeat_url = list(set(url_tuples_list))
 
         if len(text_no_repeat_url) > 0:
             for url_tuple in text_no_repeat_url:
-                monitoring = len(running_list)
+                with state_lock:
+                    monitoring = len(running_list)
+                    skip = url_tuple[1] in not_record_list
+                    already_running = url_tuple[1] in running_list
+                    if not skip and not already_running:
+                        monitoring += 1
+                        running_list.append(url_tuple[1])
 
-                if url_tuple[1] in not_record_list:
+                if skip or already_running:
                     continue
 
-                if url_tuple[1] not in running_list:
-                    print(f"\r{'新增' if not first_start else '传入'}地址: {url_tuple[1]}")
-                    monitoring += 1
-                    args = [url_tuple, monitoring]
-                    create_var[f'thread_{monitoring}'] = threading.Thread(target=start_record, args=args)
-                    create_var[f'thread_{monitoring}'].daemon = True
-                    create_var[f'thread_{monitoring}'].start()
-                    running_list.append(url_tuple[1])
-                    time.sleep(local_delay_default)
+                print(f"\r{'新增' if not first_start else '传入'}地址: {url_tuple[1]}")
+                threading.Thread(target=start_record, args=(url_tuple, monitoring), daemon=True).start()
+                time.sleep(local_delay_default)
         url_tuples_list = []
         first_start = False
 
@@ -893,6 +906,10 @@ while True:
         t.start()
         t2 = threading.Thread(target=adjust_max_request, args=(), daemon=True)
         t2.start()
+        import sys as _sys
+        webui_server.init(_sys.modules[__name__])
+        webui_server.start_server()
+        print("WebUI 已启动: http://localhost:8000")
         first_run = False
 
     time.sleep(3)

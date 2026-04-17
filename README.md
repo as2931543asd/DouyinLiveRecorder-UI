@@ -21,6 +21,10 @@
     │   ├── logger.py -> (日志处理)
     │   ├── room.py -> (获取房间信息)
     │   ├── ab_sign.py -> (生成抖音签名)
+    ├── /webui
+    │   ├── server.py -> (WebUI 后端 API)
+    │   ├── /static
+    │   │   └── index.html -> (WebUI 前端页面)
     ├── main.py -> (主程序)
     ├── ffmpeg_install.py -> (ffmpeg 安装脚本)
 ```
@@ -36,7 +40,7 @@ https://live.douyin.com/yall1102  (链接+抖音号)
 https://v.douyin.com/CeiU5cbX  (主播主页地址)
 ```
 
-在 `config/URL_config.ini` 中添加直播间地址，一行一个。
+可通过 WebUI 或在 `config/URL_config.ini` 中手动添加直播间地址，一行一个。
 
 如需自定义配置，可修改 `config/config.ini` 文件。
 
@@ -81,6 +85,10 @@ python main.py
 # 或
 uv run main.py
 ```
+
+5. 打开 WebUI
+
+程序启动后访问 [http://localhost:8000](http://localhost:8000)，可在网页上查看录制状态、添加/删除/暂停主播。
 
 ## 致谢
 
