@@ -24,7 +24,6 @@ body:
       options:
         - Directly running the exe file
         - Running with source code
-        - Running with docker
     validations:
       required: true
   - type: dropdown

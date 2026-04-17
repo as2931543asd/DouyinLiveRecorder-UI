@@ -23,7 +23,6 @@ body:
       options:
         - Executable file run directly
         - Running with source code
-        - Running with docker
     validations:
       required: true
   - type: dropdown

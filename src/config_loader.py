@@ -69,6 +69,8 @@ class Settings:
         self.max_request = int(g("录制设置", "同一时间访问网络的线程数", 3))
         self.delay_default = int(g("录制设置", "循环时间(秒)", 120))
         self.local_delay_default = int(g("录制设置", "排队读取网址时间(秒)", 0))
+        self.startup_stagger_delay = int(g("录制设置", "首次启动排队读取网址时间(秒)", 3))
+        self.startup_stagger_jitter = int(g("录制设置", "首次启动随机抖动时间(秒)", 2))
         self.loop_time = self._bool(g("录制设置", "是否显示循环秒数", "否"), False)
         self.show_url = self._bool(g("录制设置", "是否显示直播源地址", "否"), False)
         self.disk_space_limit = float(g("录制设置", "录制空间剩余阈值(gb)", 1.0))

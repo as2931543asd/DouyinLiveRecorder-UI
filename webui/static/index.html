@@ -811,28 +811,26 @@ createApp({
     }
 
     function statusClass(s) {
-      if (s.paused) return 'paused';
-      if (s.is_recording) return 'rec';
+      if (s.state === '已暂停') return 'paused';
+      if (s.state === '录制中') return 'rec';
       return 'wait';
     }
     function statusLabel(s) {
-      if (s.paused) return '已暂停';
-      if (s.is_recording) return '录制中';
-      return '监控中';
+      return s.state || '监控中';
     }
 
     function matchTab(s, t) {
       if (t === 'all') return true;
-      if (t === 'recording') return !s.paused && s.is_recording;
-      if (t === 'monitoring') return !s.paused && !s.is_recording;
-      if (t === 'paused') return s.paused;
+      if (t === 'recording') return s.state === '录制中';
+      if (t === 'monitoring') return s.state === '监控中';
+      if (t === 'paused') return s.state === '已暂停';
       return true;
     }
 
     function statusRank(s) {
-      if (s.paused) return 2;
-      if (s.is_recording) return 0;
-      return 1;
+      if (s.state === '录制中') return 0;
+      if (s.state === '监控中') return 1;
+      return 2;
     }
 
     const filteredStreamers = computed(() => {
@@ -846,7 +844,9 @@ createApp({
         .sort((a, b) => {
           const d = statusRank(a) - statusRank(b);
           if (d !== 0) return d;
-          return (a.name || '').localeCompare(b.name || '');
+          const an = (a.name || a.url || '').trim();
+          const bn = (b.name || b.url || '').trim();
+          return an.localeCompare(bn, 'zh-Hans-CN');
         });
     });
 

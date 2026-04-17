@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import os
+import random
 import re
 import threading
 import time
@@ -181,6 +182,15 @@ def load_and_dispatch(
         runtime.text_no_repeat_url = list(set(runtime.url_tuples_list))
 
         if runtime.text_no_repeat_url:
+            pending_urls = [
+                url_tuple for url_tuple in runtime.text_no_repeat_url
+                if url_tuple[1] not in runtime.not_record_list and url_tuple[1] not in runtime.running_list
+            ]
+            if runtime.first_start and pending_urls:
+                logger.info(
+                    f"首次启动共需加载 {len(pending_urls)} 个直播间，启用缓启动以降低批量请求风控"
+                )
+
             for url_tuple in runtime.text_no_repeat_url:
                 with runtime.state_lock:
                     runtime.monitoring = len(runtime.running_list)
@@ -200,7 +210,15 @@ def load_and_dispatch(
                     args=(url_tuple, settings, default_path, runtime.monitoring),
                     daemon=True,
                 ).start()
-                time.sleep(settings.local_delay_default)
+                if runtime.first_start:
+                    base_delay = max(settings.local_delay_default, settings.startup_stagger_delay)
+                    jitter_delay = max(0, settings.startup_stagger_jitter)
+                    sleep_seconds = base_delay + random.randint(0, jitter_delay)
+                    if sleep_seconds > 0:
+                        logger.info(f"首次启动缓启动中，{sleep_seconds} 秒后继续加载下一位主播")
+                        time.sleep(sleep_seconds)
+                elif settings.local_delay_default > 0:
+                    time.sleep(settings.local_delay_default)
 
         runtime.url_tuples_list = []
         runtime.first_start = False

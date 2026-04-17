@@ -162,6 +162,11 @@ def _parse_url_config() -> list[dict]:
     streamers: list[dict] = []
     with runtime.state_lock:
         running_snapshot = list(runtime.running_list)
+        recording_url_snapshot = {
+            entry[2]
+            for entry in runtime.recording_time_list.values()
+            if len(entry) >= 3 and entry[2]
+        }
     try:
         with open(_url_config_file, "r", encoding=text_encoding, errors="ignore") as f:
             for line in f:
@@ -186,7 +191,9 @@ def _parse_url_config() -> list[dict]:
                     url = parts[1] if len(parts) > 1 else ""
                     name = parts[2] if len(parts) > 2 else ""
 
-                is_recording = any(url in rec for rec in running_snapshot)
+                is_recording = url in recording_url_snapshot
+                is_monitoring = url in running_snapshot and not paused
+                state = "已暂停" if paused else ("录制中" if is_recording else "监控中")
 
                 streamers.append({
                     "url": url,
@@ -194,6 +201,8 @@ def _parse_url_config() -> list[dict]:
                     "name": name.replace("主播: ", "").strip(),
                     "paused": paused,
                     "is_recording": is_recording and not paused,
+                    "is_monitoring": is_monitoring,
+                    "state": state,
                 })
     except FileNotFoundError:
         pass

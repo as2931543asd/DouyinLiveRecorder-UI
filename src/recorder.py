@@ -117,6 +117,7 @@ def clear_record_info(record_name: str, record_url: str) -> None:
     removed = False
     with runtime.state_lock:
         runtime.recording.discard(record_name)
+        runtime.recording_time_list.pop(record_name, None)
         if record_url in runtime.url_comments and record_url in runtime.running_list:
             runtime.running_list.remove(record_url)
             runtime.monitoring -= 1
@@ -169,6 +170,7 @@ def _check_subprocess(
 
     with runtime.state_lock:
         runtime.recording.discard(record_name)
+        runtime.recording_time_list.pop(record_name, None)
     return False
 
 
@@ -359,6 +361,7 @@ def start_record(
             run_once = False
 
             while True:
+                loop_log_name = f"序号{count_variable}"
                 try:
                     if "douyin.com/" not in record_url:
                         logger.error(f"{record_url} 不支持的直播地址，仅支持抖音直播")
@@ -403,6 +406,7 @@ def start_record(
                     else:
                         anchor_name = clean_name(anchor_name, settings.clean_emoji)
                         record_name = f"序号{count_variable} {anchor_name}"
+                        loop_log_name = record_name
 
                         if record_url in runtime.url_comments:
                             logger.info(f"[{anchor_name}] 已被注释，本条线程将会退出")
@@ -417,7 +421,7 @@ def start_record(
                             run_once = True
 
                         if not port_info["is_live"]:
-                            logger.debug(f"{record_name} 等待开播")
+                            logger.info(f"{record_name} 循环值守中，当前未开播")
                         else:
                             logger.info(f"{record_name} 正在直播中")
 
@@ -479,6 +483,7 @@ def start_record(
                 if record_finished:
                     wait_seconds = 30
                     record_finished = False
+                logger.info(f"{loop_log_name} {wait_seconds} 秒后开始下一轮值守检查")
                 time.sleep(wait_seconds)
         except Exception as e:
             logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
