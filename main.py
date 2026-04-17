@@ -25,7 +25,7 @@ from src import runtime, url_config, utils
 from src.config_loader import Settings
 from src.file_ops import backup_file_loop
 from src.logger import logger
-from src.monitor import adjust_max_request_loop, display_info_loop
+from src.monitor import adjust_max_request_loop
 from webui import server as webui_server
 
 version = "v4.0.7"
@@ -52,8 +52,9 @@ def _check_ffmpeg_existence() -> bool:
         result = subprocess.run(["ffmpeg", "-version"], check=True, capture_output=True, text=True)
         if result.returncode == 0:
             lines = result.stdout.splitlines()
-            print(lines[0])
-            print(lines[1])
+            logger.info(lines[0])
+            if len(lines) > 1:
+                logger.info(lines[1])
     except subprocess.CalledProcessError as e:
         logger.error(e)
     except FileNotFoundError:
@@ -66,13 +67,10 @@ def _check_ffmpeg_existence() -> bool:
 
 
 def _print_banner() -> None:
-    print("-----------------------------------------------------")
-    print("|              DouyinLiveRecorder-UI                |")
-    print("-----------------------------------------------------")
-    print(f"版本号: {version}")
-    print("GitHub: https://github.com/as2931543asd/DouyinLiveRecorder-UI")
-    print("支持平台: 抖音")
-    print(".....................................................")
+    logger.info("========== DouyinLiveRecorder-UI ==========")
+    logger.info(f"版本号: {version}")
+    logger.info("GitHub: https://github.com/as2931543asd/DouyinLiveRecorder-UI")
+    logger.info("支持平台: 抖音")
 
 
 def _enforce_disk_space(settings: Settings, first_run: bool) -> None:
@@ -97,7 +95,6 @@ def _start_background_threads(settings: Settings) -> None:
     threading.Thread(
         target=backup_file_loop, args=(config_file, url_config_file, backup_dir), daemon=True
     ).start()
-    threading.Thread(target=display_info_loop, args=(settings,), daemon=True).start()
     threading.Thread(target=adjust_max_request_loop, daemon=True).start()
 
 
@@ -107,7 +104,7 @@ def _start_webui() -> None:
     port = int(os.environ.get("WEBUI_PORT", "8000"))
     webui_server.start_server(host=host, port=port)
     display_host = "localhost" if host in ("127.0.0.1", "0.0.0.0") else host
-    print(f"WebUI 已启动: http://{display_host}:{port}")
+    logger.info(f"WebUI 已启动: http://{display_host}:{port}")
 
 
 def main() -> None:

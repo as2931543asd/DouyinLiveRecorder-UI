@@ -2,7 +2,7 @@ import os
 import sys
 from enum import Enum, auto
 from dataclasses import dataclass, field
-from .utils import logger
+from .logger import logger
 
 
 class ProxyType(Enum):
@@ -56,9 +56,9 @@ class ProxyDetector:
                 if ip_port:
                     ip, port = ip_port.split(":")
             except FileNotFoundError as err:
-                logger.warning("No proxy information found: " + str(err))
+                logger.debug(f"未找到代理服务器设置: {err}")
             except Exception as err:
-                logger.error("An error occurred: " + str(err))
+                logger.error(f"读取代理服务器设置出错: {err}")
         else:
             logger.debug("No proxy is enabled on the system")
         return ip, port
@@ -68,9 +68,9 @@ class ProxyDetector:
             if self.winreg.QueryValueEx(self.__INTERNET_SETTINGS, "ProxyEnable")[0] == 1:
                 return True
         except FileNotFoundError as err:
-            print("No proxy information found: " + str(err))
+            logger.debug(f"未找到代理开关设置: {err}")
         except Exception as err:
-            print("An error occurred: " + str(err))
+            logger.error(f"读取代理开关设置出错: {err}")
         return False
 
     @staticmethod

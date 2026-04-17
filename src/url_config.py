@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import threading
 import time
@@ -18,9 +19,6 @@ from .config_loader import QUALITY_CHOICES, Settings, text_encoding
 from .file_ops import delete_line, update_file
 from .logger import logger
 from .recorder import start_record
-from .utils import Color
-
-_color = Color()
 
 _DOUYIN_HOSTS = {"live.douyin.com", "v.douyin.com", "www.douyin.com"}
 
@@ -116,9 +114,8 @@ def load_and_dispatch(
                         runtime.url_tuples_list.append((quality, url, name))
                 else:
                     if not origin_line.startswith("#"):
-                        _color.print_colored(
-                            f"\r{origin_line.strip()} 不支持的链接，仅支持抖音直播.此条跳过",
-                            _color.YELLOW,
+                        logger.warning(
+                            f"{origin_line.strip()} 不是抖音直播链接，此条跳过并已注释"
                         )
                         update_file(
                             url_config_file, old_str=origin_line, new_str=origin_line,
@@ -160,7 +157,7 @@ def load_and_dispatch(
                     continue
 
                 tag = "传入" if runtime.first_start else "新增"
-                print(f"\r{tag}地址: {url_tuple[1]}")
+                logger.info(f"{tag}地址: {url_tuple[1]}")
                 threading.Thread(
                     target=start_record,
                     args=(url_tuple, settings, default_path, runtime.monitoring),
@@ -176,7 +173,6 @@ def load_and_dispatch(
 
 def ensure_url_config_file(url_config_file: str) -> str:
     """保证 URL_config.ini 存在，返回当前文件内容（用于更新失败时回滚）。"""
-    import os
     ini_url_content = ""
     try:
         if os.path.isfile(url_config_file):
@@ -186,7 +182,7 @@ def ensure_url_config_file(url_config_file: str) -> str:
             if not os.path.isfile(url_config_file):
                 with open(url_config_file, "w", encoding=text_encoding) as f:
                     pass
-            print("URL_config.ini 为空，请通过 WebUI (http://localhost:8000) 添加直播间地址")
+            logger.warning("URL_config.ini 为空，请通过 WebUI (http://localhost:8000) 添加直播间地址")
     except OSError as err:
         logger.error(f"发生 I/O 错误: {err}")
     return ini_url_content

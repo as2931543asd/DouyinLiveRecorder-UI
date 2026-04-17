@@ -13,6 +13,7 @@ import execjs
 import httpx
 import urllib.request
 from . import JS_SCRIPT_PATH, utils
+from .logger import logger
 
 no_proxy_handler = urllib.request.ProxyHandler({})
 opener = urllib.request.build_opener(no_proxy_handler)
@@ -136,15 +137,8 @@ async def get_live_room_id(room_id: str, sec_user_id: str, proxy_addr: str | Non
             json_data = response.json()
             return json_data['data']['room']['owner']['web_rid']
     except httpx.HTTPStatusError as e:
-        print(f"HTTP status error occurred: {e.response.status_code}")
+        logger.error(f"get_live_room_id HTTP 错误: {e.response.status_code}")
         raise
     except Exception as e:
-        print(f"An exception occurred during get_live_room_id: {e}")
+        logger.error(f"get_live_room_id 异常: {e}")
         raise
-
-
-if __name__ == '__main__':
-    room_url = "https://v.douyin.com/iQLgKSj/"
-    _room_id, sec_uid = get_sec_user_id(room_url)
-    web_rid = get_live_room_id(_room_id, sec_uid)
-    print("return web_rid:", web_rid)

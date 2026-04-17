@@ -2,6 +2,7 @@
 import httpx
 from typing import Dict, Any
 from .. import utils
+from ..logger import logger
 
 OptionalStr = str | None
 OptionalDict = Dict[str, Any] | None
@@ -55,5 +56,5 @@ async def get_response_status(url: str, proxy_addr: OptionalStr = None, headers:
             response = await client.head(url, headers=headers, follow_redirects=True)
             return response.status_code == 200
     except Exception as e:
-        print(e)
+        logger.error(f"get_response_status 异常: {e}")
     return False

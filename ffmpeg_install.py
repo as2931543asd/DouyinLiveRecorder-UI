@@ -208,10 +208,12 @@ def check_ffmpeg_installed() -> bool:
     except FileNotFoundError:
         pass
     except OSError as e:
-        print(f"OSError occurred: {e}. ffmpeg may not be installed correctly or is not available in the system PATH.")
-        print("Please delete the ffmpeg and try to download and install again.")
+        logger.error(
+            f"OSError occurred: {e}. ffmpeg may not be installed correctly or is not available in the system PATH."
+        )
+        logger.error("Please delete the ffmpeg and try to download and install again.")
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+        logger.error(f"An unexpected error occurred: {e}")
     return False
 
 

@@ -41,7 +41,8 @@ main.py (主循环, 每3秒检查一次)
 - **src/runtime.py** — 进程内共享的可变状态与锁（`recording` / `running_list` / `recording_time_list` / `error_window` / `state_lock` / `file_update_lock` / `max_request_lock`）+ 常驻 asyncio 事件循环 + `run_coro()`。所有跨线程共享的全局变量都集中在此。
 - **src/config_loader.py** — `Settings` 类，封装 `config/config.ini` 的读取。`settings.reload()` 覆盖字段——worker 线程持有同一实例即可实时看到新值。
 - **src/file_ops.py** — URL_config.ini 行级改写（`update_file` / `delete_line`）+ 配置文件定时备份。写操作统一走 `runtime.file_update_lock`。
-- **src/monitor.py** — 两个 daemon 线程循环：`display_info_loop` 打印控制台状态，`adjust_max_request_loop` 按错误率微调 `runtime.max_request`。
+- **src/monitor.py** — 一个 daemon 线程循环 `adjust_max_request_loop`，按错误率微调 `runtime.max_request`。状态展示由 WebUI 承担。
+- **src/logger.py** — 统一 loguru 配置：stderr（INFO+，彩色）+ `logs/app.log`（DEBUG+，按 10MB 滚动，保留 5 份）。全项目禁用 `print`，一律走 `logger`。
 - **src/recorder.py** — 单直播间 worker。`start_record` 内部循环 → spider/stream 获取源 → 构造 ffmpeg 命令 → `_check_subprocess` 阻塞等待 → 可选 TS→MP4 转码。
 - **src/url_config.py** — 解析 `URL_config.ini`，对每个新 URL 启动一个 `recorder.start_record` daemon 线程；处理主播名回填与非法链接自动注释。
 - **src/spider.py** — 抖音直播数据抓取。`get_douyin_web_stream_data()` 走 Web 端，`get_douyin_app_stream_data()` 走 App 端作为 fallback。
@@ -59,9 +60,9 @@ main.py (主循环, 每3秒检查一次)
 ### 线程模型
 
 - 主线程：配置读取 + URL 调度
-- Display 线程（daemon）：每5秒刷新监控状态
 - Error adjuster 线程（daemon）：监控错误率，动态调整 max_request
 - WebUI 线程（daemon）：FastAPI/uvicorn HTTP 服务器
+- Backup 线程（daemon）：周期备份 config / URL_config
 - N 个 worker 线程：每个 URL 一个，阻塞在 ffmpeg 子进程
 
 ### 配置
