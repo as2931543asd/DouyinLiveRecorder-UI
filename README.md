@@ -11,22 +11,29 @@
 ```
 .
 └── DouyinLiveRecorder/
-    ├── /config -> (配置文件)
+    ├── /config -> (配置文件: config.ini + URL_config.ini)
     ├── /logs -> (运行日志)
-    ├── /backup_config -> (配置备份)
+    ├── /backup_config -> (配置定时备份)
+    ├── /downloads -> (录制文件输出目录)
     ├── /src
-    │   ├── spider.py -> (获取直播数据)
-    │   ├── stream.py -> (获取直播流地址)
-    │   ├── utils.py -> (工具函数)
-    │   ├── logger.py -> (日志处理)
-    │   ├── room.py -> (获取房间信息)
-    │   ├── ab_sign.py -> (生成抖音签名)
+    │   ├── runtime.py -> (跨线程共享状态、锁、常驻 asyncio 事件循环)
+    │   ├── config_loader.py -> (config.ini 读取与热重载)
+    │   ├── url_config.py -> (URL_config.ini 解析与 worker 调度)
+    │   ├── recorder.py -> (单直播间录制 worker，封装 ffmpeg 子进程)
+    │   ├── monitor.py -> (控制台状态打印 + max_request 动态调整)
+    │   ├── file_ops.py -> (URL_config 行级改写 + 配置备份)
+    │   ├── spider.py -> (抖音 Web/App 端直播数据抓取)
+    │   ├── stream.py -> (从抓取结果提取流地址、画质映射)
+    │   ├── room.py -> (URL 解析、x-bogus 签名)
+    │   ├── ab_sign.py -> (a_bogus 签名: SM3 + RC4)
+    │   ├── http_clients/ -> (httpx 异步封装)
+    │   ├── utils.py / logger.py / proxy.py / initializer.py
     ├── /webui
-    │   ├── server.py -> (WebUI 后端 API)
+    │   ├── server.py -> (FastAPI 后端，本机 127.0.0.1:8000)
     │   ├── /static
-    │   │   └── index.html -> (WebUI 前端页面)
-    ├── main.py -> (主程序)
-    ├── ffmpeg_install.py -> (ffmpeg 安装脚本)
+    │   │   └── index.html -> (Vue 3 单页面前端)
+    ├── main.py -> (装配层: banner → ffmpeg → 主循环)
+    ├── ffmpeg_install.py -> (Windows 自动安装 ffmpeg)
 ```
 
 ## 使用说明
