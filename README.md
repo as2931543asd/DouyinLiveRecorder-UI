@@ -51,6 +51,11 @@ https://v.douyin.com/CeiU5cbX  (主播主页地址)
 
 如需自定义配置，可修改 `config/config.ini` 文件。
 
+如果监控的主播很多，建议调大下面两个参数，避免程序刚启动时集中请求过多触发风控：
+
+- `首次启动排队读取网址时间(秒)`：仅首次启动时，每个直播间 worker 拉起前的基础等待时间；
+- `首次启动随机抖动时间(秒)`：在基础等待时间上再额外随机增加 `0~N` 秒，进一步打散请求节奏。
+
 ### 源码运行
 
 1. 拉取项目代码
@@ -95,13 +100,31 @@ uv run main.py
 
 5. 打开 WebUI
 
-程序启动后访问 [http://localhost:8000](http://localhost:8000)，可在网页上：
+程序启动后访问 [http://localhost:9527](http://localhost:9527)，可在网页上：
 
 - 查看概览（监控中 / 录制中 / 并发上限 / 瞬时错误）；
 - 主播列表按状态排序（录制中 → 监控中 → 已暂停），录制中的行内显示实时录制时长；
 - 每行附跳转按钮，新标签页直接打开直播间；
 - 支持添加 / 暂停 / 恢复 / 删除主播（删除和 `#` 注释均可正确停止对应 worker）；
 - 底部"运行日志"面板实时滚动，支持按级别着色与自动滚动开关。
+
+### systemd 托管
+
+如果你是通过系统级服务 `douyinlive-status.service` 托管本项目，可使用下面这些命令：
+
+```bash
+# 查看状态
+systemctl status douyinlive-status.service
+
+# 重启服务
+systemctl restart douyinlive-status.service
+
+# 查看最近日志
+journalctl -u douyinlive-status.service -n 100 --no-pager
+
+# 开机自启
+systemctl enable douyinlive-status.service
+```
 
 ## 致谢
 

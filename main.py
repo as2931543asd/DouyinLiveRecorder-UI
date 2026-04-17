@@ -100,8 +100,8 @@ def _start_background_threads(settings: Settings) -> None:
 
 def _start_webui() -> None:
     webui_server.init(url_config_file)
-    host = os.environ.get("WEBUI_HOST", "127.0.0.1")
-    port = int(os.environ.get("WEBUI_PORT", "8000"))
+    host = os.environ.get("WEBUI_HOST", "0.0.0.0")
+    port = int(os.environ.get("WEBUI_PORT", "9527"))
     webui_server.start_server(host=host, port=port)
     display_host = "localhost" if host in ("127.0.0.1", "0.0.0.0") else host
     logger.info(f"WebUI 已启动: http://{display_host}:{port}")
@@ -119,6 +119,9 @@ def main() -> None:
     settings = Settings(config_file)
     runtime.max_request = settings.max_request
     runtime.semaphore = threading.Semaphore(settings.max_request)
+    _start_background_threads(settings)
+    _start_webui()
+    runtime.first_run = False
 
     first_iteration = True
     while True:
@@ -132,11 +135,6 @@ def main() -> None:
             default_path=default_path,
             ini_url_content=ini_url_content,
         )
-
-        if runtime.first_run:
-            _start_background_threads(settings)
-            _start_webui()
-            runtime.first_run = False
 
         first_iteration = False
         time.sleep(3)

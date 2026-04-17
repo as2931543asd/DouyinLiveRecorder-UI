@@ -23,7 +23,6 @@ body:
       options:
         - 直接运行的exe文件
         - 使用源代码运行
-        - 使用docker运行
     validations:
       required: true
   - type: dropdown
