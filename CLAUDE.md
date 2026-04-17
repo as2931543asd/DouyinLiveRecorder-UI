@@ -37,18 +37,24 @@ main.py (主循环, 每3秒检查一次)
 
 ### 核心模块
 
-- **main.py** — 主程序入口。管理全局状态（recording set、running_list）、线程调度、配置热加载、错误率动态调节并发数。
+- **main.py** — 装配层。只负责启动顺序：banner → ffmpeg 检查 → 载入 Settings → 启动后台线程 → 进入主循环调用 `url_config.load_and_dispatch`。
+- **src/runtime.py** — 进程内共享的可变状态与锁（`recording` / `running_list` / `recording_time_list` / `error_window` / `state_lock` / `file_update_lock` / `max_request_lock`）+ 常驻 asyncio 事件循环 + `run_coro()`。所有跨线程共享的全局变量都集中在此。
+- **src/config_loader.py** — `Settings` 类，封装 `config/config.ini` 的读取。`settings.reload()` 覆盖字段——worker 线程持有同一实例即可实时看到新值。
+- **src/file_ops.py** — URL_config.ini 行级改写（`update_file` / `delete_line`）+ 配置文件定时备份。写操作统一走 `runtime.file_update_lock`。
+- **src/monitor.py** — 两个 daemon 线程循环：`display_info_loop` 打印控制台状态，`adjust_max_request_loop` 按错误率微调 `runtime.max_request`。
+- **src/recorder.py** — 单直播间 worker。`start_record` 内部循环 → spider/stream 获取源 → 构造 ffmpeg 命令 → `_check_subprocess` 阻塞等待 → 可选 TS→MP4 转码。
+- **src/url_config.py** — 解析 `URL_config.ini`，对每个新 URL 启动一个 `recorder.start_record` daemon 线程；处理主播名回填与非法链接自动注释。
 - **src/spider.py** — 抖音直播数据抓取。`get_douyin_web_stream_data()` 走 Web 端，`get_douyin_app_stream_data()` 走 App 端作为 fallback。
 - **src/stream.py** — 从 spider 返回的 JSON 中提取流地址。画质映射：原画(OD) > 超清(UHD) > 高清(HD) > 标清(SD) > 流畅(LD)。检测 h265 编码时强制使用 TS 格式（FLV 不支持 h265）。
 - **src/room.py** — URL 解析，提取 room_id、sec_user_id。通过 execjs 调用 x-bogus.js 生成签名。
 - **src/ab_sign.py** — SM3 哈希 + RC4 加密，生成 a_bogus 签名参数。
-- **src/http_clients/async_http.py** — httpx 封装，所有 API 调用均为 async，由 main.py 里常驻的后台事件循环 + `run_coro()`（`run_coroutine_threadsafe`）桥接到各 worker 线程。
+- **src/http_clients/async_http.py** — httpx 封装，所有 API 调用均为 async，由 `runtime._bg_loop` 常驻事件循环 + `runtime.run_coro()`（`run_coroutine_threadsafe`）桥接到各 worker 线程。
 
 ### WebUI
 
-- **webui/server.py** — FastAPI 后端，提供 REST API（状态查询、主播增删改）。在 main.py 中作为 daemon 线程启动（uvicorn），默认只绑 `127.0.0.1:8000`（本机访问，不开放到局域网）。
-- **webui/static/index.html** — Vue 3 CDN 单页面应用，每 3 秒轮询 `/api/status` 刷新。
-- API 通过 `import sys.modules[__name__]` 读取 main.py 全局状态。读共享状态（recording / recording_time_list / running_list）必须走 `state_lock` 的 snapshot；写 URL 配置走 `file_update_lock`。
+- **webui/server.py** — FastAPI 后端，提供 REST API（状态查询、主播增删改）。由 main.py 调用 `init(url_config_file)` 注入 ini 路径，然后作为 daemon 线程启动（uvicorn），默认只绑 `127.0.0.1:8000`（本机访问，不开放到局域网）。
+- **webui/static/index.html** — Vue 3 CDN 单页面应用，每 3 秒轮询 `/api/status` 刷新。支持深/浅色切换、按状态过滤、搜索、模态框添加主播。
+- API 通过 `from src import runtime` 直接读共享状态。读共享状态（recording / recording_time_list / running_list）必须先在 `runtime.state_lock` 下取 snapshot 再释放；写 URL_config 走 `runtime.file_update_lock`。
 
 ### 线程模型
 

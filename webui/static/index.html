@@ -3,204 +3,711 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>抖音直播录制 - 控制面板</title>
+<title>抖音直播录制 · 控制面板</title>
 <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
 <style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f0f2f5; color: #333; min-height: 100vh; }
-.header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #fff; padding: 20px 32px; }
-.header h1 { font-size: 22px; font-weight: 600; }
-.header p { font-size: 13px; opacity: .8; margin-top: 4px; }
-.container { max-width: 960px; margin: 24px auto; padding: 0 16px; }
+/* ================= Design tokens ================= */
+:root {
+  --bg: #f5f7fb;
+  --bg-elev: #ffffff;
+  --bg-elev-2: #fafbfd;
+  --border: #e7ebf3;
+  --border-strong: #d7dde8;
+  --text: #1f2937;
+  --text-muted: #6b7280;
+  --text-subtle: #9ca3af;
 
-/* Stats bar */
-.stats { display: flex; gap: 16px; margin-bottom: 24px; flex-wrap: wrap; }
-.stat-card { background: #fff; border-radius: 10px; padding: 16px 20px; flex: 1; min-width: 140px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
-.stat-card .label { font-size: 12px; color: #888; margin-bottom: 4px; }
-.stat-card .value { font-size: 28px; font-weight: 700; }
-.stat-card .value.green { color: #52c41a; }
-.stat-card .value.blue { color: #667eea; }
-.stat-card .value.red { color: #f5222d; }
+  --brand: #6366f1;
+  --brand-hover: #5557e8;
+  --brand-soft: #eef0ff;
 
-/* Panels */
-.panel { background: #fff; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.08); margin-bottom: 24px; overflow: hidden; }
-.panel-header { padding: 16px 20px; border-bottom: 1px solid #f0f0f0; font-size: 15px; font-weight: 600; display: flex; align-items: center; justify-content: space-between; }
-.panel-body { padding: 16px 20px; }
+  --success: #10b981;
+  --success-soft: #e7f8f2;
+  --danger: #ef4444;
+  --danger-soft: #fdecec;
+  --warning: #f59e0b;
+  --warning-soft: #fef4e2;
+  --info: #3b82f6;
+  --info-soft: #e8f0fe;
 
-/* Recording list */
-.rec-item { display: flex; align-items: center; padding: 10px 0; border-bottom: 1px solid #f5f5f5; }
-.rec-item:last-child { border-bottom: none; }
-.rec-dot { width: 8px; height: 8px; border-radius: 50%; background: #f5222d; margin-right: 12px; animation: pulse 1.5s infinite; }
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .4; } }
-.rec-info { flex: 1; }
-.rec-name { font-size: 14px; font-weight: 500; }
-.rec-meta { font-size: 12px; color: #999; margin-top: 2px; }
-.rec-duration { font-size: 14px; font-weight: 600; color: #667eea; white-space: nowrap; }
+  --shadow-sm: 0 1px 2px rgba(16,24,40,.04), 0 1px 3px rgba(16,24,40,.06);
+  --shadow-md: 0 4px 8px -2px rgba(16,24,40,.06), 0 2px 4px -2px rgba(16,24,40,.04);
+  --shadow-lg: 0 12px 24px -6px rgba(16,24,40,.12), 0 4px 8px -2px rgba(16,24,40,.06);
 
-/* Streamer list */
-.streamer-item { display: flex; align-items: center; padding: 12px 0; border-bottom: 1px solid #f5f5f5; gap: 12px; }
-.streamer-item:last-child { border-bottom: none; }
-.streamer-info { flex: 1; min-width: 0; }
-.streamer-name { font-size: 14px; font-weight: 500; }
-.streamer-url { font-size: 12px; color: #999; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.streamer-quality { font-size: 12px; background: #f0f0f0; padding: 2px 8px; border-radius: 4px; white-space: nowrap; }
-.streamer-status { font-size: 12px; padding: 2px 8px; border-radius: 4px; white-space: nowrap; }
-.streamer-status.recording { background: #f6ffed; color: #52c41a; }
-.streamer-status.paused { background: #fff7e6; color: #fa8c16; }
-.streamer-status.waiting { background: #f0f0f0; color: #999; }
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
 
-/* Buttons */
-.btn { border: none; cursor: pointer; border-radius: 6px; font-size: 13px; padding: 6px 14px; transition: all .15s; }
-.btn-primary { background: #667eea; color: #fff; }
-.btn-primary:hover { background: #5a6fd6; }
-.btn-sm { padding: 4px 10px; font-size: 12px; }
-.btn-ghost { background: transparent; color: #667eea; }
-.btn-ghost:hover { background: #f0f2ff; }
-.btn-danger { background: transparent; color: #f5222d; }
-.btn-danger:hover { background: #fff1f0; }
-.btn-warning { background: transparent; color: #fa8c16; }
-.btn-warning:hover { background: #fff7e6; }
-
-/* Add form */
-.add-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; }
-.form-group { display: flex; flex-direction: column; gap: 4px; }
-.form-group label { font-size: 12px; color: #888; }
-.form-group input, .form-group select {
-  border: 1px solid #d9d9d9; border-radius: 6px; padding: 7px 12px; font-size: 13px; outline: none; transition: border .15s;
+  --trans: .18s cubic-bezier(.4,0,.2,1);
 }
-.form-group input:focus, .form-group select:focus { border-color: #667eea; }
-.form-group.url { flex: 1; min-width: 240px; }
 
-/* Empty state */
-.empty { text-align: center; padding: 32px; color: #bbb; font-size: 14px; }
+[data-theme="dark"] {
+  --bg: #0f141c;
+  --bg-elev: #18202c;
+  --bg-elev-2: #1e2633;
+  --border: #262f3d;
+  --border-strong: #303a4a;
+  --text: #e5e9f0;
+  --text-muted: #9aa4b4;
+  --text-subtle: #6b7588;
 
-/* Toast */
-.toast { position: fixed; top: 20px; right: 20px; padding: 12px 20px; border-radius: 8px; color: #fff; font-size: 14px; z-index: 999; transition: opacity .3s; }
-.toast.success { background: #52c41a; }
-.toast.error { background: #f5222d; }
+  --brand: #818cf8;
+  --brand-hover: #a5afff;
+  --brand-soft: #272b4a;
+
+  --success-soft: #0f2a22;
+  --danger-soft: #2b1717;
+  --warning-soft: #2a2112;
+  --info-soft: #152236;
+
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.2);
+  --shadow-md: 0 4px 8px rgba(0,0,0,.25);
+  --shadow-lg: 0 12px 24px rgba(0,0,0,.35);
+}
+
+/* ================= Base ================= */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei",
+               "Segoe UI", Roboto, Inter, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  transition: background var(--trans), color var(--trans);
+}
+button { font: inherit; color: inherit; cursor: pointer; }
+input, select { font: inherit; color: inherit; }
+a { color: inherit; text-decoration: none; }
+
+/* ================= Topbar ================= */
+.topbar {
+  position: sticky; top: 0; z-index: 20;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 24px;
+  display: flex; align-items: center; gap: 16px;
+  backdrop-filter: saturate(180%) blur(8px);
+}
+.logo {
+  width: 34px; height: 34px; border-radius: 9px;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6 60%, #ec4899);
+  display: grid; place-items: center;
+  color: #fff; font-weight: 700;
+  box-shadow: 0 6px 14px -4px rgba(99,102,241,.5);
+}
+.title { font-size: 15px; font-weight: 600; letter-spacing: .2px; }
+.subtitle { font-size: 12px; color: var(--text-muted); margin-top: 1px; }
+
+.topbar-spacer { flex: 1; }
+
+.pulse-live {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--text-muted);
+  padding: 5px 12px; border-radius: 999px;
+  background: var(--bg-elev-2); border: 1px solid var(--border);
+}
+.pulse-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 0 rgba(16,185,129,.6);
+  animation: pulse 2s infinite;
+}
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16,185,129,.6); }
+  70% { box-shadow: 0 0 0 8px rgba(16,185,129,0); }
+}
+
+.icon-btn {
+  width: 36px; height: 36px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border); background: var(--bg-elev);
+  display: grid; place-items: center;
+  color: var(--text-muted);
+  transition: all var(--trans);
+}
+.icon-btn:hover { color: var(--text); border-color: var(--border-strong); }
+
+/* ================= Layout ================= */
+.main {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 28px 24px 60px;
+}
+.section + .section { margin-top: 24px; }
+
+/* ================= Stat cards ================= */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+.stat-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 18px 20px;
+  box-shadow: var(--shadow-sm);
+  position: relative; overflow: hidden;
+  transition: transform var(--trans), box-shadow var(--trans);
+}
+.stat-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
+.stat-icon {
+  width: 40px; height: 40px; border-radius: 10px;
+  display: grid; place-items: center; margin-bottom: 12px;
+}
+.stat-icon.blue { background: var(--info-soft); color: var(--info); }
+.stat-icon.green { background: var(--success-soft); color: var(--success); }
+.stat-icon.red { background: var(--danger-soft); color: var(--danger); }
+.stat-icon.purple { background: var(--brand-soft); color: var(--brand); }
+
+.stat-label { font-size: 12px; color: var(--text-muted); letter-spacing: .3px; text-transform: uppercase; }
+.stat-value { font-size: 30px; font-weight: 700; margin-top: 2px; }
+.stat-foot { font-size: 12px; color: var(--text-subtle); margin-top: 6px; }
+
+/* ================= Panel ================= */
+.panel {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+.panel-head {
+  padding: 16px 22px;
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 14px;
+  flex-wrap: wrap;
+}
+.panel-title {
+  font-size: 15px; font-weight: 600;
+  display: flex; align-items: center; gap: 10px;
+}
+.count-pill {
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 500;
+}
+.panel-spacer { flex: 1; }
+.panel-body { padding: 8px 22px 16px; }
+
+/* ================= Recording list ================= */
+.rec-row {
+  display: flex; align-items: center; gap: 14px;
+  padding: 12px 0; border-bottom: 1px dashed var(--border);
+}
+.rec-row:last-child { border-bottom: none; }
+.rec-live-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 0 0 rgba(239,68,68,.6);
+  animation: pulse-red 1.6s infinite;
+  flex-shrink: 0;
+}
+@keyframes pulse-red {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,.6); }
+  70% { box-shadow: 0 0 0 10px rgba(239,68,68,0); }
+}
+.rec-info { flex: 1; min-width: 0; }
+.rec-name {
+  font-size: 14px; font-weight: 500;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rec-meta {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: 4px; font-size: 12px; color: var(--text-muted);
+}
+.quality-badge {
+  display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 4px;
+  background: var(--brand-soft); color: var(--brand);
+  font-size: 11px; font-weight: 600;
+}
+.rec-duration {
+  font-family: "SF Mono", "Menlo", ui-monospace, monospace;
+  font-size: 14px; font-weight: 600; color: var(--brand);
+  padding: 4px 12px; background: var(--brand-soft); border-radius: 6px;
+  white-space: nowrap;
+}
+
+/* ================= Streamer list ================= */
+.tab-row {
+  display: flex; gap: 4px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  padding: 3px; border-radius: 8px;
+}
+.tab {
+  padding: 5px 14px; border-radius: 6px;
+  font-size: 13px; color: var(--text-muted);
+  background: transparent; border: none; cursor: pointer;
+  transition: all var(--trans);
+}
+.tab.active {
+  background: var(--bg-elev); color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+.tab:hover:not(.active) { color: var(--text); }
+
+.search-box {
+  position: relative;
+}
+.search-box input {
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  border-radius: 8px;
+  padding: 7px 12px 7px 34px;
+  font-size: 13px; outline: none; width: 220px;
+  transition: all var(--trans);
+}
+.search-box input:focus { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft); }
+.search-box svg {
+  position: absolute; left: 10px; top: 50%; transform: translateY(-50%);
+  color: var(--text-subtle);
+}
+
+.streamer-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto auto;
+  gap: 14px; align-items: center;
+  padding: 14px 0;
+  border-bottom: 1px dashed var(--border);
+}
+.streamer-row:last-child { border-bottom: none; }
+
+.status-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px; border-radius: 999px;
+  font-size: 11px; font-weight: 500;
+  white-space: nowrap;
+}
+.status-badge.rec { background: var(--success-soft); color: var(--success); }
+.status-badge.wait { background: var(--bg-elev-2); color: var(--text-muted); border: 1px solid var(--border); }
+.status-badge.paused { background: var(--warning-soft); color: var(--warning); }
+.status-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: currentColor;
+}
+.status-badge.rec .status-dot { animation: pulse-green 1.8s infinite; }
+@keyframes pulse-green {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16,185,129,.5); }
+  70% { box-shadow: 0 0 0 6px rgba(16,185,129,0); }
+}
+
+.streamer-info { min-width: 0; }
+.streamer-name {
+  font-size: 14px; font-weight: 500;
+  display: flex; align-items: center; gap: 8px;
+}
+.streamer-name-empty { color: var(--text-subtle); font-style: italic; }
+.streamer-url {
+  font-size: 12px; color: var(--text-subtle); margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: "SF Mono", "Menlo", ui-monospace, monospace;
+}
+
+/* ================= Buttons ================= */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: 7px 14px;
+  font-size: 13px; font-weight: 500;
+  transition: all var(--trans);
+  cursor: pointer;
+}
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+
+.btn-primary { background: var(--brand); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: var(--brand-hover); }
+
+.btn-ghost {
+  background: var(--bg-elev); color: var(--text); border-color: var(--border);
+}
+.btn-ghost:hover:not(:disabled) { border-color: var(--border-strong); }
+
+.btn-sm { padding: 5px 10px; font-size: 12px; border-radius: 5px; }
+
+.btn-icon {
+  width: 32px; height: 32px; padding: 0;
+  display: grid; place-items: center;
+  border-radius: 6px;
+  background: transparent; color: var(--text-muted);
+  border: 1px solid transparent;
+}
+.btn-icon:hover:not(:disabled) {
+  background: var(--bg-elev-2); color: var(--text); border-color: var(--border);
+}
+.btn-icon.danger:hover:not(:disabled) {
+  background: var(--danger-soft); color: var(--danger); border-color: transparent;
+}
+
+/* ================= Empty states ================= */
+.empty {
+  padding: 42px 20px; text-align: center;
+  color: var(--text-subtle); font-size: 14px;
+}
+.empty svg { margin-bottom: 10px; opacity: .5; }
+
+/* ================= Modal ================= */
+.modal-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(15,20,28,.5);
+  backdrop-filter: blur(4px);
+  z-index: 100;
+  display: grid; place-items: center;
+  animation: fade-in .18s ease;
+}
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+.modal {
+  background: var(--bg-elev);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  width: min(460px, calc(100vw - 32px));
+  overflow: hidden;
+  animation: pop-in .22s cubic-bezier(.2,.7,.3,1);
+}
+@keyframes pop-in {
+  from { transform: translateY(12px) scale(.97); opacity: 0; }
+  to { transform: translateY(0) scale(1); opacity: 1; }
+}
+.modal-head {
+  padding: 18px 22px; border-bottom: 1px solid var(--border);
+  font-size: 15px; font-weight: 600;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.modal-body { padding: 20px 22px; }
+.modal-foot {
+  padding: 14px 22px; border-top: 1px solid var(--border);
+  display: flex; justify-content: flex-end; gap: 10px;
+  background: var(--bg-elev-2);
+}
+
+.field { margin-bottom: 14px; }
+.field:last-child { margin-bottom: 0; }
+.field label {
+  display: block; font-size: 12px; font-weight: 500;
+  color: var(--text-muted); margin-bottom: 6px;
+}
+.field input, .field select {
+  width: 100%;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  border-radius: var(--radius-sm);
+  padding: 9px 12px;
+  font-size: 13px; outline: none;
+  transition: all var(--trans);
+}
+.field input:focus, .field select:focus {
+  border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft);
+}
+.field .hint { font-size: 11px; color: var(--text-subtle); margin-top: 4px; }
+
+/* ================= Toast ================= */
+.toast {
+  position: fixed; top: 20px; right: 20px; z-index: 200;
+  padding: 12px 18px; border-radius: 10px;
+  font-size: 13px; color: #fff;
+  box-shadow: var(--shadow-lg);
+  display: flex; align-items: center; gap: 10px;
+  animation: slide-in .22s cubic-bezier(.2,.7,.3,1);
+}
+@keyframes slide-in {
+  from { transform: translateX(20px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+.toast.success { background: var(--success); }
+.toast.error { background: var(--danger); }
+
+/* ================= Responsive ================= */
+@media (max-width: 720px) {
+  .topbar { padding: 12px 16px; }
+  .main { padding: 20px 16px 40px; }
+  .search-box input { width: 140px; }
+  .panel-head { padding: 14px 16px; }
+  .panel-body { padding: 6px 16px 14px; }
+  .streamer-row {
+    grid-template-columns: auto 1fr;
+    grid-template-areas:
+      "status info"
+      "actions actions";
+    row-gap: 8px;
+  }
+  .streamer-row > .status-badge { grid-area: status; }
+  .streamer-row > .streamer-info { grid-area: info; }
+  .streamer-row > .quality-badge { display: none; }
+  .streamer-row > .row-actions { grid-area: actions; display: flex; gap: 6px; justify-self: end; }
+}
+
+/* subtle transitions for list updates */
+.list-enter-active, .list-leave-active { transition: all .22s ease; }
+.list-enter-from { opacity: 0; transform: translateY(-4px); }
+.list-leave-to { opacity: 0; transform: translateX(-10px); }
 </style>
 </head>
 <body>
-<div id="app">
-  <div class="header">
-    <h1>抖音直播录制 - 控制面板</h1>
-    <p>实时监控录制状态，管理主播列表</p>
+<div id="app" v-cloak>
+
+  <!-- ================= Topbar ================= -->
+  <div class="topbar">
+    <div class="logo">抖</div>
+    <div>
+      <div class="title">抖音直播录制</div>
+      <div class="subtitle">Live Recording Dashboard</div>
+    </div>
+
+    <div class="topbar-spacer"></div>
+
+    <div class="pulse-live" v-if="status.recording_count > 0">
+      <span class="pulse-dot"></span>
+      {{ status.recording_count }} 路正在录制
+    </div>
+
+    <button class="icon-btn" @click="toggleTheme" :title="theme === 'dark' ? '切换浅色' : '切换深色'">
+      <svg v-if="theme === 'dark'" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+      <svg v-else width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+    </button>
   </div>
 
-  <div class="container">
-    <!-- Stats -->
-    <div class="stats">
-      <div class="stat-card">
-        <div class="label">监控中</div>
-        <div class="value blue">{{ status.monitoring }}</div>
-      </div>
-      <div class="stat-card">
-        <div class="label">录制中</div>
-        <div class="value green">{{ status.recording_count }}</div>
-      </div>
-      <div class="stat-card">
-        <div class="label">瞬时错误</div>
-        <div class="value" :class="status.error_count > 0 ? 'red' : ''">{{ status.error_count }}</div>
-      </div>
-    </div>
-
-    <!-- Recording panel -->
-    <div class="panel">
-      <div class="panel-header">正在录制</div>
-      <div class="panel-body">
-        <div v-if="status.recordings.length === 0" class="empty">暂无录制中的直播</div>
-        <div v-for="rec in status.recordings" :key="rec.name" class="rec-item">
-          <div class="rec-dot"></div>
-          <div class="rec-info">
-            <div class="rec-name">{{ rec.name }}</div>
-            <div class="rec-meta">画质: {{ rec.quality }}</div>
+  <div class="main">
+    <!-- ================= Stats ================= -->
+    <section class="section">
+      <div class="stat-grid">
+        <div class="stat-card">
+          <div class="stat-icon blue">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M1.05 12C2.4 7.6 6.8 4.5 12 4.5s9.6 3.1 11 7.5c-1.4 4.4-5.8 7.5-11 7.5S2.4 16.4 1.05 12z"></path></svg>
           </div>
-          <div class="rec-duration">{{ rec.duration }}</div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Streamers panel -->
-    <div class="panel">
-      <div class="panel-header">
-        <span>主播列表 ({{ streamers.length }})</span>
-        <button class="btn btn-primary btn-sm" @click="showAdd = !showAdd">{{ showAdd ? '取消' : '添加主播' }}</button>
-      </div>
-      <div class="panel-body">
-        <!-- Add form -->
-        <div v-if="showAdd" style="margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px solid #f0f0f0;">
-          <div class="add-form">
-            <div class="form-group url">
-              <label>直播间链接</label>
-              <input v-model="newStreamer.url" placeholder="https://live.douyin.com/..." @keyup.enter="addStreamer">
-            </div>
-            <div class="form-group">
-              <label>画质</label>
-              <select v-model="newStreamer.quality">
-                <option>原画</option><option>蓝光</option><option>超清</option>
-                <option>高清</option><option>标清</option><option>流畅</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label>备注名称</label>
-              <input v-model="newStreamer.name" placeholder="可选" @keyup.enter="addStreamer">
-            </div>
-            <button class="btn btn-primary" @click="addStreamer" :disabled="!newStreamer.url.trim()">添加</button>
-          </div>
+          <div class="stat-label">监控中</div>
+          <div class="stat-value">{{ status.monitoring }}</div>
+          <div class="stat-foot">当前持续守候的直播间</div>
         </div>
 
-        <div v-if="streamers.length === 0" class="empty">暂无主播，点击上方按钮添加</div>
-        <div v-for="s in streamers" :key="s.url" class="streamer-item">
-          <div class="streamer-info">
-            <div class="streamer-name">{{ s.name || '未命名' }}</div>
-            <div class="streamer-url">{{ s.url }}</div>
+        <div class="stat-card">
+          <div class="stat-icon green">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
           </div>
-          <span class="streamer-quality">{{ s.quality }}</span>
-          <span class="streamer-status" :class="s.paused ? 'paused' : (s.is_recording ? 'recording' : 'waiting')">
-            {{ s.paused ? '已暂停' : (s.is_recording ? '录制中' : '监控中') }}
-          </span>
-          <button class="btn btn-sm" :class="s.paused ? 'btn-ghost' : 'btn-warning'" @click="toggleStreamer(s)" :title="s.paused ? '恢复' : '暂停'">
-            {{ s.paused ? '恢复' : '暂停' }}
+          <div class="stat-label">录制中</div>
+          <div class="stat-value">{{ status.recording_count }}</div>
+          <div class="stat-foot">正在写入本地视频文件</div>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-icon purple">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+          </div>
+          <div class="stat-label">并发上限</div>
+          <div class="stat-value">{{ status.max_request || '-' }}</div>
+          <div class="stat-foot">由错误率动态调整</div>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-icon" :class="status.error_count > 0 ? 'red' : 'green'">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+          </div>
+          <div class="stat-label">瞬时错误</div>
+          <div class="stat-value" :style="{ color: status.error_count > 0 ? 'var(--danger)' : 'inherit' }">{{ status.error_count }}</div>
+          <div class="stat-foot">5 秒窗口内累计</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= Recording feed ================= -->
+    <section class="section">
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="3" fill="currentColor"></circle></svg>
+            正在录制
+          </div>
+          <span class="count-pill">{{ status.recordings.length }}</span>
+        </div>
+        <div class="panel-body">
+          <div v-if="status.recordings.length === 0" class="empty">
+            <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
+            <div>暂无正在录制的直播</div>
+          </div>
+          <transition-group name="list" tag="div">
+            <div v-for="rec in status.recordings" :key="rec.name" class="rec-row">
+              <div class="rec-live-dot"></div>
+              <div class="rec-info">
+                <div class="rec-name">{{ rec.name }}</div>
+                <div class="rec-meta">
+                  <span class="quality-badge">{{ rec.quality }}</span>
+                  <span>已录制</span>
+                </div>
+              </div>
+              <div class="rec-duration">{{ rec.duration }}</div>
+            </div>
+          </transition-group>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= Streamers ================= -->
+    <section class="section">
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+            主播列表
+          </div>
+          <span class="count-pill">{{ streamers.length }}</span>
+
+          <div class="tab-row" style="margin-left: 12px;">
+            <button v-for="t in tabs" :key="t.key"
+                    class="tab" :class="{ active: tab === t.key }"
+                    @click="tab = t.key">
+              {{ t.label }}
+              <span v-if="countByTab(t.key)" style="opacity:.6; margin-left:4px;">{{ countByTab(t.key) }}</span>
+            </button>
+          </div>
+
+          <div class="panel-spacer"></div>
+
+          <div class="search-box">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+            <input v-model="search" type="text" placeholder="搜索主播 / URL">
+          </div>
+
+          <button class="btn btn-primary" @click="openAdd">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            添加主播
           </button>
-          <button class="btn btn-sm btn-danger" @click="deleteStreamer(s)" title="删除">删除</button>
         </div>
+        <div class="panel-body">
+          <div v-if="filteredStreamers.length === 0" class="empty">
+            <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+            <div v-if="streamers.length === 0">还没有主播，点击右上角"添加主播"开始</div>
+            <div v-else>没有匹配的主播</div>
+          </div>
+
+          <transition-group name="list" tag="div">
+            <div v-for="s in filteredStreamers" :key="s.url" class="streamer-row">
+              <span class="status-badge" :class="statusClass(s)">
+                <span class="status-dot"></span>
+                {{ statusLabel(s) }}
+              </span>
+              <div class="streamer-info">
+                <div class="streamer-name">
+                  <span v-if="s.name">{{ s.name }}</span>
+                  <span v-else class="streamer-name-empty">未命名主播</span>
+                </div>
+                <div class="streamer-url" :title="s.url">{{ s.url }}</div>
+              </div>
+              <span class="quality-badge">{{ s.quality }}</span>
+              <span class="row-actions" style="display: contents;"></span>
+              <button class="btn-icon" @click="toggleStreamer(s)" :title="s.paused ? '恢复' : '暂停'">
+                <svg v-if="s.paused" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
+              </button>
+              <button class="btn-icon danger" @click="deleteStreamer(s)" title="删除">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"></path></svg>
+              </button>
+            </div>
+          </transition-group>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ================= Add modal ================= -->
+  <div v-if="showAdd" class="modal-backdrop" @click.self="closeAdd">
+    <div class="modal">
+      <div class="modal-head">
+        <span>添加主播</span>
+        <button class="btn-icon" @click="closeAdd" title="关闭">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="field">
+          <label>直播间链接</label>
+          <input v-model="newStreamer.url" ref="urlInput" placeholder="https://live.douyin.com/..." @keyup.enter="addStreamer">
+          <div class="hint">支持 live.douyin.com / v.douyin.com / www.douyin.com</div>
+        </div>
+        <div class="field">
+          <label>画质</label>
+          <select v-model="newStreamer.quality">
+            <option>原画</option><option>蓝光</option><option>超清</option>
+            <option>高清</option><option>标清</option><option>流畅</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>备注名称 <span style="color: var(--text-subtle); font-weight: 400;">(可选)</span></label>
+          <input v-model="newStreamer.name" placeholder="留空时会自动抓取主播昵称" @keyup.enter="addStreamer">
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-ghost" @click="closeAdd">取消</button>
+        <button class="btn btn-primary" @click="addStreamer" :disabled="!newStreamer.url.trim() || adding">
+          {{ adding ? '添加中…' : '添加' }}
+        </button>
       </div>
     </div>
   </div>
 
-  <!-- Toast -->
-  <div v-if="toast.show" class="toast" :class="toast.type">{{ toast.msg }}</div>
+  <!-- ================= Toast ================= -->
+  <transition name="list">
+    <div v-if="toast.show" class="toast" :class="toast.type">
+      <svg v-if="toast.type==='success'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+      <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+      <span>{{ toast.msg }}</span>
+    </div>
+  </transition>
 </div>
 
 <script>
-const { createApp, ref, reactive, onMounted, onUnmounted } = Vue;
+const { createApp, ref, reactive, computed, onMounted, onUnmounted, nextTick } = Vue;
 
 createApp({
   setup() {
-    const status = reactive({ monitoring: 0, recording_count: 0, error_count: 0, recordings: [] });
+    const THEME_KEY = 'dlr-theme';
+
+    const status = reactive({ monitoring: 0, recording_count: 0, error_count: 0, max_request: 0, recordings: [] });
     const streamers = ref([]);
     const showAdd = ref(false);
+    const adding = ref(false);
     const newStreamer = reactive({ url: '', quality: '原画', name: '' });
     const toast = reactive({ show: false, msg: '', type: 'success' });
+    const search = ref('');
+    const tab = ref('all');
+    const tabs = [
+      { key: 'all', label: '全部' },
+      { key: 'recording', label: '录制中' },
+      { key: 'monitoring', label: '监控中' },
+      { key: 'paused', label: '已暂停' },
+    ];
+    const theme = ref(localStorage.getItem(THEME_KEY) || 'light');
+    const urlInput = ref(null);
+
     let timer = null;
     let toastTimer = null;
+
+    function applyTheme() {
+      document.documentElement.setAttribute('data-theme', theme.value);
+      localStorage.setItem(THEME_KEY, theme.value);
+    }
+    function toggleTheme() {
+      theme.value = theme.value === 'dark' ? 'light' : 'dark';
+      applyTheme();
+    }
 
     function showToast(msg, type = 'success') {
       toast.msg = msg;
       toast.type = type;
       toast.show = true;
       clearTimeout(toastTimer);
-      toastTimer = setTimeout(() => toast.show = false, 2500);
+      toastTimer = setTimeout(() => toast.show = false, 2400);
     }
 
     async function fetchStatus() {
       try {
         const r = await fetch('/api/status');
-        const d = await r.json();
-        Object.assign(status, d);
+        Object.assign(status, await r.json());
       } catch {}
     }
-
     async function fetchStreamers() {
       try {
         const r = await fetch('/api/streamers');
@@ -208,37 +715,83 @@ createApp({
       } catch {}
     }
 
+    function statusClass(s) {
+      if (s.paused) return 'paused';
+      if (s.is_recording) return 'rec';
+      return 'wait';
+    }
+    function statusLabel(s) {
+      if (s.paused) return '已暂停';
+      if (s.is_recording) return '录制中';
+      return '监控中';
+    }
+
+    function matchTab(s, t) {
+      if (t === 'all') return true;
+      if (t === 'recording') return !s.paused && s.is_recording;
+      if (t === 'monitoring') return !s.paused && !s.is_recording;
+      if (t === 'paused') return s.paused;
+      return true;
+    }
+
+    const filteredStreamers = computed(() => {
+      const q = search.value.trim().toLowerCase();
+      return streamers.value.filter(s => {
+        if (!matchTab(s, tab.value)) return false;
+        if (!q) return true;
+        return (s.name || '').toLowerCase().includes(q) || s.url.toLowerCase().includes(q);
+      });
+    });
+
+    function countByTab(t) {
+      return streamers.value.filter(s => matchTab(s, t)).length;
+    }
+
+    async function openAdd() {
+      showAdd.value = true;
+      await nextTick();
+      urlInput.value?.focus();
+    }
+    function closeAdd() {
+      showAdd.value = false;
+    }
+
     async function addStreamer() {
-      if (!newStreamer.url.trim()) return;
+      if (!newStreamer.url.trim() || adding.value) return;
+      adding.value = true;
       try {
         const r = await fetch('/api/streamers', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url: newStreamer.url.trim(), quality: newStreamer.quality, name: newStreamer.name.trim() }),
+          body: JSON.stringify({
+            url: newStreamer.url.trim(),
+            quality: newStreamer.quality,
+            name: newStreamer.name.trim(),
+          }),
         });
         const d = await r.json();
         if (d.ok) {
-          showToast('添加成功');
+          showToast('已添加');
           newStreamer.url = '';
           newStreamer.name = '';
-          showAdd.value = false;
+          closeAdd();
           fetchStreamers();
         } else {
           showToast(d.error || '添加失败', 'error');
         }
       } catch { showToast('网络错误', 'error'); }
+      finally { adding.value = false; }
     }
 
     async function deleteStreamer(s) {
-      if (!confirm(`确定删除 ${s.name || s.url} ?`)) return;
+      if (!confirm(`确定要删除 ${s.name || s.url} 吗？`)) return;
       try {
         const r = await fetch('/api/streamers', {
           method: 'DELETE',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ url: s.url }),
         });
-        const d = await r.json();
-        if (d.ok) {
+        if ((await r.json()).ok) {
           showToast('已删除');
           fetchStreamers();
         }
@@ -252,23 +805,29 @@ createApp({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ url: s.url }),
         });
-        const d = await r.json();
-        if (d.ok) {
-          showToast(s.paused ? '已恢复' : '已暂停');
+        if ((await r.json()).ok) {
+          showToast(s.paused ? '已恢复监控' : '已暂停');
           fetchStreamers();
         }
       } catch { showToast('网络错误', 'error'); }
     }
 
+    applyTheme();
+
     onMounted(() => {
-      fetchStatus();
-      fetchStreamers();
+      fetchStatus(); fetchStreamers();
       timer = setInterval(() => { fetchStatus(); fetchStreamers(); }, 3000);
     });
-
     onUnmounted(() => clearInterval(timer));
 
-    return { status, streamers, showAdd, newStreamer, toast, addStreamer, deleteStreamer, toggleStreamer };
+    return {
+      status, streamers, showAdd, adding, newStreamer, toast,
+      search, tab, tabs, theme, urlInput,
+      filteredStreamers, countByTab,
+      statusClass, statusLabel,
+      toggleTheme,
+      openAdd, closeAdd, addStreamer, deleteStreamer, toggleStreamer,
+    };
   }
 }).mount('#app');
 </script>
