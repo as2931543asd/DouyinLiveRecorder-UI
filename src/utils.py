@@ -20,21 +20,6 @@ OptionalStr = str | None
 OptionalDict = dict | None
 
 
-class Color:
-    RED = "\033[31m"
-    GREEN = "\033[32m"
-    YELLOW = "\033[33m"
-    BLUE = "\033[34m"
-    MAGENTA = "\033[35m"
-    CYAN = "\033[36m"
-    WHITE = "\033[37m"
-    RESET = "\033[0m"
-
-    @staticmethod
-    def print_colored(text, color):
-        print(f"{color}{text}{Color.RESET}")
-
-
 def trace_error_decorator(func: callable) -> callable:
     @functools.wraps(func)
     def wrapper(*args: list, **kwargs: dict) -> Any:
@@ -68,16 +53,16 @@ def read_config_value(file_path: str | Path, section: str, key: str) -> str | No
     try:
         config.read(file_path, encoding='utf-8-sig')
     except Exception as e:
-        print(f"Error occurred while reading the configuration file: {e}")
+        logger.error(f"读取配置文件失败: {e}")
         return None
 
     if section in config:
         if key in config[section]:
             return config[section][key]
         else:
-            print(f"Key [{key}] does not exist in section [{section}].")
+            logger.warning(f"配置中不存在 key [{key}]（section [{section}]）")
     else:
-        print(f"Section [{section}] does not exist in the file.")
+        logger.warning(f"配置中不存在 section [{section}]")
 
     return None
 
@@ -88,11 +73,11 @@ def update_config(file_path: str | Path, section: str, key: str, new_value: str)
     try:
         config.read(file_path, encoding='utf-8-sig')
     except Exception as e:
-        print(f"An error occurred while reading the configuration file: {e}")
+        logger.error(f"读取配置文件失败: {e}")
         return
 
     if section not in config:
-        print(f"Section [{section}] does not exist in the file.")
+        logger.warning(f"配置中不存在 section [{section}]")
         return
 
     # 转义%字符
@@ -102,9 +87,9 @@ def update_config(file_path: str | Path, section: str, key: str, new_value: str)
     try:
         with open(file_path, 'w', encoding='utf-8-sig') as configfile:
             config.write(configfile)
-        print(f"The value of {key} under [{section}] in the configuration file has been updated.")
+        logger.info(f"已更新 [{section}] 下 {key} 的值")
     except Exception as e:
-        print(f"Error occurred while writing to the configuration file: {e}")
+        logger.error(f"写入配置文件失败: {e}")
 
 
 def get_file_paths(directory: str) -> list:
@@ -153,9 +138,11 @@ def check_disk_capacity(file_path: str | Path, show: bool = False) -> float:
     disk_root = Path(directory).anchor
     free_space_gb = disk_usage.free / (1024 ** 3)
     if show:
-        print(f"{disk_root} Total: {disk_usage.total / (1024 ** 3):.2f} GB "
-              f"Used: {disk_usage.used / (1024 ** 3):.2f} GB "
-              f"Free: {free_space_gb:.2f} GB\n")
+        logger.info(
+            f"{disk_root} Total: {disk_usage.total / (1024 ** 3):.2f} GB "
+            f"Used: {disk_usage.used / (1024 ** 3):.2f} GB "
+            f"Free: {free_space_gb:.2f} GB"
+        )
     return free_space_gb
 
 

@@ -1,43 +1,50 @@
 # -*- coding: utf-8 -*-
+"""统一日志配置。
 
-import os
+单一 logger 实例（loguru），两路输出：
+- stderr：INFO 及以上，带颜色
+- logs/app.log：DEBUG 及以上，按大小滚动，保留若干份
+
+所有模块：`from src.logger import logger`。
+"""
+from __future__ import annotations
+
 import sys
+from pathlib import Path
+
 from loguru import logger
+
+_LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
+_LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+_CONSOLE_FORMAT = (
+    "<green>{time:HH:mm:ss}</green> | "
+    "<level>{level: <7}</level> | "
+    "<level>{message}</level>"
+)
+_FILE_FORMAT = (
+    "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <7} | "
+    "{name}:{function}:{line} - {message}"
+)
 
 logger.remove()
 
-custom_format = "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> - <level>{message}</level>"
-
 logger.add(
     sink=sys.stderr,
-    format=custom_format,
-    level="DEBUG",
-    colorize=True,
-    enqueue=True
-)
-
-script_path = os.path.split(os.path.realpath(sys.argv[0]))[0]
-
-logger.add(
-    f"{script_path}/logs/streamget.log",
-    level="DEBUG",
-    format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}",
-    filter=lambda i: i["level"].name != "INFO",
-    serialize=False,
-    enqueue=True,
-    retention=1,
-    rotation="300 KB",
-    encoding='utf-8'
-)
-
-logger.add(
-    f"{script_path}/logs/PlayURL.log",
+    format=_CONSOLE_FORMAT,
     level="INFO",
-    format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {message}",
-    filter=lambda i: i["level"].name == "INFO",
-    serialize=False,
+    colorize=True,
     enqueue=True,
-    retention=1,
-    rotation="300 KB",
-    encoding='utf-8'
 )
+
+logger.add(
+    sink=str(_LOG_DIR / "app.log"),
+    format=_FILE_FORMAT,
+    level="DEBUG",
+    rotation="10 MB",
+    retention=5,
+    encoding="utf-8",
+    enqueue=True,
+)
+
+__all__ = ["logger"]

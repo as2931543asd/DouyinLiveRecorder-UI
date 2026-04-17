@@ -7,6 +7,8 @@ import ssl
 import json
 import urllib.request
 
+from ..logger import logger
+
 no_proxy_handler = urllib.request.ProxyHandler({})
 opener = urllib.request.build_opener(no_proxy_handler)
 
@@ -76,10 +78,10 @@ def sync_req(
                 else:
                     raise
             except urllib.error.URLError as e:
-                print(f"URL Error: {e}")
+                logger.error(f"URL Error: {e}")
                 raise
             except Exception as e:
-                print(f"An error occurred: {e}")
+                logger.error(f"sync_req 异常: {e}")
                 raise
 
     except Exception as e:

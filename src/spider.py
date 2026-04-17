@@ -16,6 +16,7 @@ from .utils import trace_error_decorator
 from .room import get_sec_user_id, get_unique_id, UnsupportedUrlError
 from .http_clients.async_http import async_req
 from .ab_sign import ab_sign
+from .logger import logger
 
 OptionalStr = str | None
 
@@ -91,7 +92,7 @@ async def get_douyin_web_stream_data(url: str, proxy_addr: OptionalStr = None, c
                     room_data['stream_url']['hls_pull_url_map'] = {**origin_m3u8, **hls_pull_url_map}
                     room_data['stream_url']['flv_pull_url'] = {**origin_flv, **flv_pull_url}
     except Exception as e:
-        print(f"Error message: {e} Error line: {e.__traceback__.tb_lineno}")
+        logger.error(f"抓取失败: {e} (行 {e.__traceback__.tb_lineno})")
         room_data = {'anchor_name': ""}
     return room_data
 
@@ -176,7 +177,7 @@ async def get_douyin_app_stream_data(url: str, proxy_addr: OptionalStr = None, c
                     room_data['stream_url']['hls_pull_url_map'] = {**origin_m3u8, **hls_pull_url_map}
                     room_data['stream_url']['flv_pull_url'] = {**origin_flv, **flv_pull_url}
     except Exception as e:
-        print(f"Error message: {e} Error line: {e.__traceback__.tb_lineno}")
+        logger.error(f"抓取失败: {e} (行 {e.__traceback__.tb_lineno})")
         room_data = {'anchor_name': ""}
     return room_data
 
@@ -233,5 +234,5 @@ async def get_douyin_stream_data(url: str, proxy_addr: OptionalStr = None, cooki
         return json_data
 
     except Exception as e:
-        print(f"First data retrieval failed: {url} Preparing to switch parsing methods due to {e}")
+        logger.warning(f"Web 端解析失败 ({url})，切换到 App 端重试: {e}")
         return await get_douyin_app_stream_data(url=url, proxy_addr=proxy_addr, cookies=cookies)

@@ -33,8 +33,6 @@ _QUALITY_MAPPING = {
     "流畅": "LD",
 }
 
-_color = utils.Color()
-
 
 # ---------- 命名 / 画质 ------------------------------------------------------
 
@@ -66,7 +64,7 @@ def converts_mp4(converts_file_path: str, settings: Settings) -> None:
             return
 
         if settings.converts_to_h264:
-            _color.print_colored("正在转码为MP4格式并重新编码为h264\n", _color.YELLOW)
+            logger.info("正在转码为 MP4 格式并重新编码为 h264")
             ffmpeg_command = [
                 "ffmpeg", "-i", converts_file_path,
                 "-c:v", "libx264",
@@ -77,7 +75,7 @@ def converts_mp4(converts_file_path: str, settings: Settings) -> None:
                 "-f", "mp4", converts_file_path.rsplit(".", maxsplit=1)[0] + ".mp4",
             ]
         else:
-            _color.print_colored("正在转码为MP4格式\n", _color.YELLOW)
+            logger.info("正在转码为 MP4 格式")
             ffmpeg_command = [
                 "ffmpeg", "-i", converts_file_path,
                 "-c:v", "copy",
@@ -124,7 +122,7 @@ def clear_record_info(record_name: str, record_url: str) -> None:
             runtime.monitoring -= 1
             removed = True
     if removed:
-        _color.print_colored(f"[{record_name}]已经从录制列表中移除\n", _color.YELLOW)
+        logger.info(f"[{record_name}] 已从录制列表中移除")
 
 
 def _check_subprocess(
@@ -148,7 +146,7 @@ def _check_subprocess(
 
     while process.poll() is None:
         if record_url in runtime.url_comments or runtime.exit_recording:
-            _color.print_colored(f"[{record_name}]录制时已被注释,本条线程将会退出", _color.YELLOW)
+            logger.warning(f"[{record_name}] 录制时已被注释，本条线程将会退出")
             clear_record_info(record_name, record_url)
             if os.name == "nt":
                 if process.stdin:
@@ -165,11 +163,9 @@ def _check_subprocess(
     if return_code == 0:
         if settings.converts_to_mp4 and save_type == "TS":
             _spawn_convert(save_file_path, settings.split_video_by_time, settings)
-        print(f"\n{record_name} {stop_time} 直播录制完成\n")
+        logger.info(f"{record_name} {stop_time} 直播录制完成")
     else:
-        _color.print_colored(
-            f"\n{record_name} {stop_time} 直播录制出错,返回码: {return_code}\n", _color.RED
-        )
+        logger.error(f"{record_name} {stop_time} 直播录制出错，返回码: {return_code}")
 
     with runtime.state_lock:
         runtime.recording.discard(record_name)
@@ -273,7 +269,7 @@ def _record_once(
     name_suffix = "_%03d" if segmented else ""
     filename = f"{anchor_name}_{title_in_name}{now}{name_suffix}{ext}"
     save_file_path = f"{full_path}/{filename}"
-    print(f"\r{anchor_name} 准备开始录制视频: {full_path}/{filename}")
+    logger.info(f"{anchor_name} 准备开始录制视频: {save_file_path}")
 
     ffmpeg_command = _ffmpeg_prologue(real_url, settings.proxy_addr)
     if segmented:
@@ -398,7 +394,9 @@ def start_record(
                         anchor_name = port_info.get("anchor_name", "")
 
                     if not port_info.get("anchor_name", ""):
-                        print(f"序号{count_variable} 网址内容获取失败,进行重试中...获取失败的地址是:{url_data}")
+                        logger.warning(
+                            f"序号{count_variable} 网址内容获取失败，进行重试中… 地址: {url_data}"
+                        )
                         with runtime.max_request_lock:
                             runtime.error_count += 1
                             runtime.error_window.append(1)
@@ -407,7 +405,7 @@ def start_record(
                         record_name = f"序号{count_variable} {anchor_name}"
 
                         if record_url in runtime.url_comments:
-                            print(f"[{anchor_name}]已被注释,本条线程将会退出")
+                            logger.info(f"[{anchor_name}] 已被注释，本条线程将会退出")
                             clear_record_info(record_name, record_url)
                             return
 
@@ -419,9 +417,9 @@ def start_record(
                             run_once = True
 
                         if not port_info["is_live"]:
-                            print(f"\r{record_name} 等待直播... ")
+                            logger.debug(f"{record_name} 等待开播")
                         else:
-                            print(f"\r{record_name} 正在直播中...")
+                            logger.info(f"{record_name} 正在直播中")
 
                             flv_url = port_info.get("flv_url")
                             codec = utils.get_query_params(flv_url, "codec") if flv_url else None
@@ -474,23 +472,14 @@ def start_record(
                         runtime.error_window.append(1)
 
                 # ---- 等待下一轮 ------------------------------------------------
-                num = max(0, random.randint(-5, 5) + settings.delay_default)
-                x = num
+                wait_seconds = max(0, random.randint(-5, 5) + settings.delay_default)
                 if runtime.error_count > 20:
-                    x += 60
-                    _color.print_colored("\r瞬时错误太多,延迟加60秒", _color.YELLOW)
+                    wait_seconds += 60
+                    logger.warning("瞬时错误过多，本轮延迟额外 +60 秒")
                 if record_finished:
-                    x = 30
+                    wait_seconds = 30
                     record_finished = False
-
-                while x:
-                    x -= 1
-                    if settings.loop_time:
-                        anchor_for_log = anchor_name_hint or "(未命名)"
-                        print(f"\r{anchor_for_log}循环等待{x}秒 ", end="")
-                    time.sleep(1)
-                if settings.loop_time:
-                    print("\r检测直播间中...", end="")
+                time.sleep(wait_seconds)
         except Exception as e:
             logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
             with runtime.max_request_lock:

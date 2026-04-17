@@ -84,7 +84,7 @@ def backup_file(file_path: str, backup_dir_path: str, limit_counts: int = 6) -> 
             os.remove(os.path.join(backup_dir_path, oldest_file))
             _files = _files[1:]
     except Exception as e:
-        logger.error(f"\r备份配置文件 {file_path} 失败：{str(e)}")
+        logger.error(f"备份配置文件 {file_path} 失败：{e}")
 
 
 def backup_file_loop(config_file: str, url_config_file: str, backup_dir: str) -> None:
