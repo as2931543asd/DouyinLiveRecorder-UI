@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>抖音直播录制 - 控制面板</title>
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f0f2f5; color: #333; min-height: 100vh; }
+.header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #fff; padding: 20px 32px; }
+.header h1 { font-size: 22px; font-weight: 600; }
+.header p { font-size: 13px; opacity: .8; margin-top: 4px; }
+.container { max-width: 960px; margin: 24px auto; padding: 0 16px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 24px; flex-wrap: wrap; }
+.stat-card { background: #fff; border-radius: 10px; padding: 16px 20px; flex: 1; min-width: 140px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.stat-card .label { font-size: 12px; color: #888; margin-bottom: 4px; }
+.stat-card .value { font-size: 28px; font-weight: 700; }
+.stat-card .value.green { color: #52c41a; }
+.stat-card .value.blue { color: #667eea; }
+.stat-card .value.red { color: #f5222d; }
+
+/* Panels */
+.panel { background: #fff; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.08); margin-bottom: 24px; overflow: hidden; }
+.panel-header { padding: 16px 20px; border-bottom: 1px solid #f0f0f0; font-size: 15px; font-weight: 600; display: flex; align-items: center; justify-content: space-between; }
+.panel-body { padding: 16px 20px; }
+
+/* Recording list */
+.rec-item { display: flex; align-items: center; padding: 10px 0; border-bottom: 1px solid #f5f5f5; }
+.rec-item:last-child { border-bottom: none; }
+.rec-dot { width: 8px; height: 8px; border-radius: 50%; background: #f5222d; margin-right: 12px; animation: pulse 1.5s infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .4; } }
+.rec-info { flex: 1; }
+.rec-name { font-size: 14px; font-weight: 500; }
+.rec-meta { font-size: 12px; color: #999; margin-top: 2px; }
+.rec-duration { font-size: 14px; font-weight: 600; color: #667eea; white-space: nowrap; }
+
+/* Streamer list */
+.streamer-item { display: flex; align-items: center; padding: 12px 0; border-bottom: 1px solid #f5f5f5; gap: 12px; }
+.streamer-item:last-child { border-bottom: none; }
+.streamer-info { flex: 1; min-width: 0; }
+.streamer-name { font-size: 14px; font-weight: 500; }
+.streamer-url { font-size: 12px; color: #999; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.streamer-quality { font-size: 12px; background: #f0f0f0; padding: 2px 8px; border-radius: 4px; white-space: nowrap; }
+.streamer-status { font-size: 12px; padding: 2px 8px; border-radius: 4px; white-space: nowrap; }
+.streamer-status.recording { background: #f6ffed; color: #52c41a; }
+.streamer-status.paused { background: #fff7e6; color: #fa8c16; }
+.streamer-status.waiting { background: #f0f0f0; color: #999; }
+
+/* Buttons */
+.btn { border: none; cursor: pointer; border-radius: 6px; font-size: 13px; padding: 6px 14px; transition: all .15s; }
+.btn-primary { background: #667eea; color: #fff; }
+.btn-primary:hover { background: #5a6fd6; }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+.btn-ghost { background: transparent; color: #667eea; }
+.btn-ghost:hover { background: #f0f2ff; }
+.btn-danger { background: transparent; color: #f5222d; }
+.btn-danger:hover { background: #fff1f0; }
+.btn-warning { background: transparent; color: #fa8c16; }
+.btn-warning:hover { background: #fff7e6; }
+
+/* Add form */
+.add-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; }
+.form-group { display: flex; flex-direction: column; gap: 4px; }
+.form-group label { font-size: 12px; color: #888; }
+.form-group input, .form-group select {
+  border: 1px solid #d9d9d9; border-radius: 6px; padding: 7px 12px; font-size: 13px; outline: none; transition: border .15s;
+}
+.form-group input:focus, .form-group select:focus { border-color: #667eea; }
+.form-group.url { flex: 1; min-width: 240px; }
+
+/* Empty state */
+.empty { text-align: center; padding: 32px; color: #bbb; font-size: 14px; }
+
+/* Toast */
+.toast { position: fixed; top: 20px; right: 20px; padding: 12px 20px; border-radius: 8px; color: #fff; font-size: 14px; z-index: 999; transition: opacity .3s; }
+.toast.success { background: #52c41a; }
+.toast.error { background: #f5222d; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="header">
+    <h1>抖音直播录制 - 控制面板</h1>
+    <p>实时监控录制状态，管理主播列表</p>
+  </div>
+
+  <div class="container">
+    <!-- Stats -->
+    <div class="stats">
+      <div class="stat-card">
+        <div class="label">监控中</div>
+        <div class="value blue">{{ status.monitoring }}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">录制中</div>
+        <div class="value green">{{ status.recording_count }}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">瞬时错误</div>
+        <div class="value" :class="status.error_count > 0 ? 'red' : ''">{{ status.error_count }}</div>
+      </div>
+    </div>
+
+    <!-- Recording panel -->
+    <div class="panel">
+      <div class="panel-header">正在录制</div>
+      <div class="panel-body">
+        <div v-if="status.recordings.length === 0" class="empty">暂无录制中的直播</div>
+        <div v-for="rec in status.recordings" :key="rec.name" class="rec-item">
+          <div class="rec-dot"></div>
+          <div class="rec-info">
+            <div class="rec-name">{{ rec.name }}</div>
+            <div class="rec-meta">画质: {{ rec.quality }}</div>
+          </div>
+          <div class="rec-duration">{{ rec.duration }}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Streamers panel -->
+    <div class="panel">
+      <div class="panel-header">
+        <span>主播列表 ({{ streamers.length }})</span>
+        <button class="btn btn-primary btn-sm" @click="showAdd = !showAdd">{{ showAdd ? '取消' : '添加主播' }}</button>
+      </div>
+      <div class="panel-body">
+        <!-- Add form -->
+        <div v-if="showAdd" style="margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px solid #f0f0f0;">
+          <div class="add-form">
+            <div class="form-group url">
+              <label>直播间链接</label>
+              <input v-model="newStreamer.url" placeholder="https://live.douyin.com/..." @keyup.enter="addStreamer">
+            </div>
+            <div class="form-group">
+              <label>画质</label>
+              <select v-model="newStreamer.quality">
+                <option>原画</option><option>蓝光</option><option>超清</option>
+                <option>高清</option><option>标清</option><option>流畅</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>备注名称</label>
+              <input v-model="newStreamer.name" placeholder="可选" @keyup.enter="addStreamer">
+            </div>
+            <button class="btn btn-primary" @click="addStreamer" :disabled="!newStreamer.url.trim()">添加</button>
+          </div>
+        </div>
+
+        <div v-if="streamers.length === 0" class="empty">暂无主播，点击上方按钮添加</div>
+        <div v-for="s in streamers" :key="s.url" class="streamer-item">
+          <div class="streamer-info">
+            <div class="streamer-name">{{ s.name || '未命名' }}</div>
+            <div class="streamer-url">{{ s.url }}</div>
+          </div>
+          <span class="streamer-quality">{{ s.quality }}</span>
+          <span class="streamer-status" :class="s.paused ? 'paused' : (s.is_recording ? 'recording' : 'waiting')">
+            {{ s.paused ? '已暂停' : (s.is_recording ? '录制中' : '监控中') }}
+          </span>
+          <button class="btn btn-sm" :class="s.paused ? 'btn-ghost' : 'btn-warning'" @click="toggleStreamer(s)" :title="s.paused ? '恢复' : '暂停'">
+            {{ s.paused ? '恢复' : '暂停' }}
+          </button>
+          <button class="btn btn-sm btn-danger" @click="deleteStreamer(s)" title="删除">删除</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div v-if="toast.show" class="toast" :class="toast.type">{{ toast.msg }}</div>
+</div>
+
+<script>
+const { createApp, ref, reactive, onMounted, onUnmounted } = Vue;
+
+createApp({
+  setup() {
+    const status = reactive({ monitoring: 0, recording_count: 0, error_count: 0, recordings: [] });
+    const streamers = ref([]);
+    const showAdd = ref(false);
+    const newStreamer = reactive({ url: '', quality: '原画', name: '' });
+    const toast = reactive({ show: false, msg: '', type: 'success' });
+    let timer = null;
+    let toastTimer = null;
+
+    function showToast(msg, type = 'success') {
+      toast.msg = msg;
+      toast.type = type;
+      toast.show = true;
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toast.show = false, 2500);
+    }
+
+    async function fetchStatus() {
+      try {
+        const r = await fetch('/api/status');
+        const d = await r.json();
+        Object.assign(status, d);
+      } catch {}
+    }
+
+    async function fetchStreamers() {
+      try {
+        const r = await fetch('/api/streamers');
+        streamers.value = await r.json();
+      } catch {}
+    }
+
+    async function addStreamer() {
+      if (!newStreamer.url.trim()) return;
+      try {
+        const r = await fetch('/api/streamers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: newStreamer.url.trim(), quality: newStreamer.quality, name: newStreamer.name.trim() }),
+        });
+        const d = await r.json();
+        if (d.ok) {
+          showToast('添加成功');
+          newStreamer.url = '';
+          newStreamer.name = '';
+          showAdd.value = false;
+          fetchStreamers();
+        } else {
+          showToast(d.error || '添加失败', 'error');
+        }
+      } catch { showToast('网络错误', 'error'); }
+    }
+
+    async function deleteStreamer(s) {
+      if (!confirm(`确定删除 ${s.name || s.url} ?`)) return;
+      try {
+        const r = await fetch('/api/streamers', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: s.url }),
+        });
+        const d = await r.json();
+        if (d.ok) {
+          showToast('已删除');
+          fetchStreamers();
+        }
+      } catch { showToast('网络错误', 'error'); }
+    }
+
+    async function toggleStreamer(s) {
+      try {
+        const r = await fetch('/api/streamers/toggle', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: s.url }),
+        });
+        const d = await r.json();
+        if (d.ok) {
+          showToast(s.paused ? '已恢复' : '已暂停');
+          fetchStreamers();
+        }
+      } catch { showToast('网络错误', 'error'); }
+    }
+
+    onMounted(() => {
+      fetchStatus();
+      fetchStreamers();
+      timer = setInterval(() => { fetchStatus(); fetchStreamers(); }, 3000);
+    });
+
+    onUnmounted(() => clearInterval(timer));
+
+    return { status, streamers, showAdd, newStreamer, toast, addStreamer, deleteStreamer, toggleStreamer };
+  }
+}).mount('#app');
+</script>
+</body>
+</html>
