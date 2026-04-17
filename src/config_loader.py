@@ -75,4 +75,6 @@ class Settings:
         self.converts_to_mp4 = self._bool(g("录制设置", "录制完成后自动转为mp4格式", "否"), False)
         self.converts_to_h264 = self._bool(g("录制设置", "mp4格式重新编码为h264", "否"), False)
         self.delete_origin_file = self._bool(g("录制设置", "追加格式后删除原文件", "否"), False)
+        self.split_video_by_time = self._bool(g("录制设置", "分段录制是否开启", "否"), False)
+        self.split_time = str(g("录制设置", "视频分段时间(秒)", 1800))
         self.dy_cookie = g("Cookie", "抖音cookie", "")

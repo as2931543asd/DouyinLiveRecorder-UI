@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import datetime
+import glob
 import os
 import random
 import re
@@ -95,6 +96,25 @@ def converts_mp4(converts_file_path: str, settings: Settings) -> None:
         logger.error(f"An unknown error occurred: {e}")
 
 
+def _iter_segment_files(segment_template: str) -> list[str]:
+    """把 `_%03d.<ext>` 模板还原成已产出的分段文件列表。"""
+    pattern = segment_template.replace("_%03d", "_*")
+    return sorted(glob.glob(pattern))
+
+
+def converts_segments_mp4(segment_template: str, settings: Settings) -> None:
+    """分段录制收尾：逐个分段转码为 MP4（单线程串行，避免同时起多个 ffmpeg）。"""
+    for seg in _iter_segment_files(segment_template):
+        if seg.lower().endswith(".mp4"):
+            continue
+        converts_mp4(seg, settings)
+
+
+def _spawn_convert(save_file_path: str, segmented: bool, settings: Settings) -> None:
+    target = converts_segments_mp4 if segmented else converts_mp4
+    threading.Thread(target=target, args=(save_file_path, settings), daemon=True).start()
+
+
 def clear_record_info(record_name: str, record_url: str) -> None:
     removed = False
     with runtime.state_lock:
@@ -144,7 +164,7 @@ def _check_subprocess(
     stop_time = time.strftime("%Y-%m-%d %H:%M:%S")
     if return_code == 0:
         if settings.converts_to_mp4 and save_type == "TS":
-            threading.Thread(target=converts_mp4, args=(save_file_path, settings)).start()
+            _spawn_convert(save_file_path, settings.split_video_by_time, settings)
         print(f"\n{record_name} {stop_time} 直播录制完成\n")
     else:
         _color.print_colored(
@@ -202,6 +222,33 @@ _FORMAT_ARGS = {
 _FORMAT_EXT = {"FLV": ".flv", "MKV": ".mkv", "MP4": ".mp4", "TS": ".ts"}
 
 
+def _segment_args(record_save_type: str, split_time: str) -> list[str]:
+    """按格式返回 ffmpeg 分段录制参数。与非分段走不同 muxer 路径。"""
+    if record_save_type == "FLV":
+        return [
+            "-map", "0", "-c:v", "copy", "-c:a", "copy", "-bsf:a", "aac_adtstoasc",
+            "-f", "segment", "-segment_time", split_time, "-segment_format", "flv",
+            "-reset_timestamps", "1",
+        ]
+    if record_save_type == "MKV":
+        return [
+            "-flags", "global_header", "-c:v", "copy", "-c:a", "aac", "-map", "0",
+            "-f", "segment", "-segment_time", split_time, "-segment_format", "matroska",
+            "-reset_timestamps", "1",
+        ]
+    if record_save_type == "MP4":
+        return [
+            "-c:v", "copy", "-c:a", "aac", "-map", "0",
+            "-f", "segment", "-segment_time", split_time, "-segment_format", "mp4",
+            "-reset_timestamps", "1", "-movflags", "+frag_keyframe+empty_moov",
+        ]
+    return [
+        "-c:v", "copy", "-c:a", "copy", "-map", "0",
+        "-f", "segment", "-segment_time", split_time, "-segment_format", "mpegts",
+        "-reset_timestamps", "1",
+    ]
+
+
 def _record_once(
     real_url: str,
     anchor_name: str,
@@ -222,12 +269,17 @@ def _record_once(
         title_in_name = live_title + "_"
 
     ext = _FORMAT_EXT[record_save_type]
-    filename = f"{anchor_name}_{title_in_name}{now}{ext}"
+    segmented = settings.split_video_by_time
+    name_suffix = "_%03d" if segmented else ""
+    filename = f"{anchor_name}_{title_in_name}{now}{name_suffix}{ext}"
     save_file_path = f"{full_path}/{filename}"
     print(f"\r{anchor_name} 准备开始录制视频: {full_path}/{filename}")
 
     ffmpeg_command = _ffmpeg_prologue(real_url, settings.proxy_addr)
-    ffmpeg_command.extend(_FORMAT_ARGS[record_save_type])
+    if segmented:
+        ffmpeg_command.extend(_segment_args(record_save_type, settings.split_time))
+    else:
+        ffmpeg_command.extend(_FORMAT_ARGS[record_save_type])
     ffmpeg_command.append(save_file_path)
 
     try:
@@ -236,9 +288,7 @@ def _record_once(
         )
         if comment_end:
             if record_save_type == "TS":
-                threading.Thread(
-                    target=converts_mp4, args=(save_file_path, settings)
-                ).start()
+                _spawn_convert(save_file_path, segmented, settings)
             return True
     except subprocess.CalledProcessError as e:
         logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
@@ -249,7 +299,7 @@ def _record_once(
     # FLV 格式结束时走独立转码（区别于 TS：只有 FLV 这里是无条件转）
     if record_save_type == "FLV" and settings.converts_to_mp4:
         try:
-            threading.Thread(target=converts_mp4, args=(save_file_path, settings)).start()
+            _spawn_convert(save_file_path, segmented, settings)
         except Exception as e:
             logger.error(f"转码失败: {e}")
 

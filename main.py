@@ -67,10 +67,10 @@ def _check_ffmpeg_existence() -> bool:
 
 def _print_banner() -> None:
     print("-----------------------------------------------------")
-    print("|                DouyinLiveRecorder                 |")
+    print("|              DouyinLiveRecorder-UI                |")
     print("-----------------------------------------------------")
     print(f"版本号: {version}")
-    print("GitHub: https://github.com/ihmily/DouyinLiveRecorder")
+    print("GitHub: https://github.com/as2931543asd/DouyinLiveRecorder-UI")
     print("支持平台: 抖音")
     print(".....................................................")
 
@@ -103,8 +103,11 @@ def _start_background_threads(settings: Settings) -> None:
 
 def _start_webui() -> None:
     webui_server.init(url_config_file)
-    webui_server.start_server()
-    print("WebUI 已启动: http://localhost:8000")
+    host = os.environ.get("WEBUI_HOST", "127.0.0.1")
+    port = int(os.environ.get("WEBUI_PORT", "8000"))
+    webui_server.start_server(host=host, port=port)
+    display_host = "localhost" if host in ("127.0.0.1", "0.0.0.0") else host
+    print(f"WebUI 已启动: http://{display_host}:{port}")
 
 
 def main() -> None:

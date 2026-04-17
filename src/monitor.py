@@ -34,6 +34,10 @@ def display_info_loop(settings: Settings) -> None:
             print(f"是否开启代理录制: {'是' if settings.use_proxy else '否'}", end=" | ")
             print(f"录制视频质量为: {settings.video_record_quality}", end=" | ")
             print(f"录制视频格式为: {settings.video_save_type}", end=" | ")
+            if settings.split_video_by_time:
+                print(f"录制分段: 开启 {settings.split_time}秒", end=" | ")
+            else:
+                print("录制分段: 否", end=" | ")
             print(f"目前瞬时错误数为: {runtime.error_count}", end=" | ")
             now = time.strftime("%H:%M:%S", time.localtime())
             print(f"当前时间: {now}")
