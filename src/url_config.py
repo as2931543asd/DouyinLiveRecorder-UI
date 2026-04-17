@@ -54,6 +54,24 @@ def _ensure_scheme(url: str) -> str:
     return url if "://" in url else "https://" + url
 
 
+def _normalize_line(line: str, default_quality: str) -> str | None:
+    """把手工简写行规范成 `画质,URL[,名称]`。"""
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return None
+
+    parsed = _parse_line(stripped, default_quality)
+    if not parsed:
+        return None
+
+    quality, url, name = parsed
+    url = _ensure_scheme(url)
+    normalized = f"{quality},{url}"
+    if name:
+        normalized += f",{name}"
+    return normalized
+
+
 def load_and_dispatch(
     url_config_file: str,
     settings: Settings,
@@ -87,6 +105,15 @@ def load_and_dispatch(
                 is_comment_line = line.startswith("#")
                 if is_comment_line:
                     line = line.lstrip("#")
+
+                normalized_line = _normalize_line(line, settings.video_record_quality)
+                if normalized_line and normalized_line != line:
+                    line = update_file(
+                        url_config_file,
+                        old_str=line,
+                        new_str=normalized_line,
+                        fallback_content=ini_url_content,
+                    )
 
                 parsed = _parse_line(line, settings.video_record_quality)
                 if not parsed:
