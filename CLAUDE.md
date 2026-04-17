@@ -42,9 +42,9 @@ main.py (主循环, 每3秒检查一次)
 - **src/config_loader.py** — `Settings` 类，封装 `config/config.ini` 的读取。`settings.reload()` 覆盖字段——worker 线程持有同一实例即可实时看到新值。
 - **src/file_ops.py** — URL_config.ini 行级改写（`update_file` / `delete_line`）+ 配置文件定时备份。写操作统一走 `runtime.file_update_lock`。
 - **src/monitor.py** — 一个 daemon 线程循环 `adjust_max_request_loop`，按错误率微调 `runtime.max_request`。状态展示由 WebUI 承担。
-- **src/logger.py** — 统一 loguru 配置：stderr（INFO+，彩色）+ `logs/app.log`（DEBUG+，按 10MB 滚动，保留 5 份）。全项目禁用 `print`，一律走 `logger`。
+- **src/logger.py** — 统一 loguru 配置：stderr（INFO+，彩色）+ `logs/app.log`（DEBUG+，按 10MB 滚动，保留 5 份）+ 内存环形缓冲（最多 300 条 INFO+）。全项目禁用 `print`，一律走 `logger`。WebUI 通过 `get_recent_logs()` 拉取缓冲。
 - **src/recorder.py** — 单直播间 worker。`start_record` 内部循环 → spider/stream 获取源 → 构造 ffmpeg 命令 → `_check_subprocess` 阻塞等待 → 可选 TS→MP4 转码。
-- **src/url_config.py** — 解析 `URL_config.ini`，对每个新 URL 启动一个 `recorder.start_record` daemon 线程；处理主播名回填与非法链接自动注释。
+- **src/url_config.py** — 解析 `URL_config.ini`，对每个新 URL 启动一个 `recorder.start_record` daemon 线程；处理主播名回填与非法链接自动注释。整行删除（而非 `#` 注释）时，会把 `running_list` 中已从 ini 消失的 URL 追加到 `runtime.url_comments`，复用 worker 的退出路径。
 - **src/spider.py** — 抖音直播数据抓取。`get_douyin_web_stream_data()` 走 Web 端，`get_douyin_app_stream_data()` 走 App 端作为 fallback。
 - **src/stream.py** — 从 spider 返回的 JSON 中提取流地址。画质映射：原画(OD) > 超清(UHD) > 高清(HD) > 标清(SD) > 流畅(LD)。检测 h265 编码时强制使用 TS 格式（FLV 不支持 h265）。
 - **src/room.py** — URL 解析，提取 room_id、sec_user_id。通过 execjs 调用 x-bogus.js 生成签名。
@@ -53,9 +53,10 @@ main.py (主循环, 每3秒检查一次)
 
 ### WebUI
 
-- **webui/server.py** — FastAPI 后端，提供 REST API（状态查询、主播增删改）。由 main.py 调用 `init(url_config_file)` 注入 ini 路径，然后作为 daemon 线程启动（uvicorn），默认只绑 `127.0.0.1:8000`（本机访问，不开放到局域网）。
-- **webui/static/index.html** — Vue 3 CDN 单页面应用，每 3 秒轮询 `/api/status` 刷新。支持深/浅色切换、按状态过滤、搜索、模态框添加主播。
+- **webui/server.py** — FastAPI 后端，提供 REST API：`/api/status`（概览 + 正在录制列表，含 URL 与时长）、`/api/streamers`（列表 / 增 / 删 / 暂停切换）、`/api/logs?limit=N`（拉取内存日志环形缓冲）。由 main.py 调用 `init(url_config_file)` 注入 ini 路径，然后作为 daemon 线程启动（uvicorn），默认只绑 `127.0.0.1:8000`（本机访问，不开放到局域网）。
+- **webui/static/index.html** — Vue 3 CDN 单页面应用，每 3 秒轮询 `/api/status` + `/api/streamers` + `/api/logs` 刷新。特性：深/浅色切换；主播列表按"录制中 → 监控中 → 已暂停"排序，录制中行内显示时长 chip；每行含跳转按钮（新标签页打开直播间）、暂停 / 删除；底部运行日志面板支持按级别着色与自动滚动。
 - API 通过 `from src import runtime` 直接读共享状态。读共享状态（recording / recording_time_list / running_list）必须先在 `runtime.state_lock` 下取 snapshot 再释放；写 URL_config 走 `runtime.file_update_lock`。
+- `runtime.recording_time_list[record_name]` 的值是 `[start_time, quality_zh, record_url]`，URL 用于前端把录制行与主播列表项对齐。
 
 ### 线程模型
 

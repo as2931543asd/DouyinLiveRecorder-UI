@@ -270,12 +270,28 @@ a { color: inherit; text-decoration: none; }
 
 .streamer-row {
   display: grid;
-  grid-template-columns: auto 1fr auto auto auto;
+  grid-template-columns: auto 1fr auto auto;
   gap: 14px; align-items: center;
   padding: 14px 0;
   border-bottom: 1px dashed var(--border);
 }
 .streamer-row:last-child { border-bottom: none; }
+
+.row-actions { display: flex; gap: 6px; align-items: center; }
+
+.rec-duration-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: "SF Mono", "Menlo", ui-monospace, monospace;
+  font-size: 12px; font-weight: 600; color: var(--danger);
+  padding: 2px 10px; background: var(--danger-soft); border-radius: 4px;
+  white-space: nowrap;
+  margin-left: 4px;
+}
+.rec-duration-chip .dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--danger);
+  animation: pulse-red 1.6s infinite;
+}
 
 .status-badge {
   display: inline-flex; align-items: center; gap: 6px;
@@ -421,6 +437,46 @@ a { color: inherit; text-decoration: none; }
 .toast.success { background: var(--success); }
 .toast.error { background: var(--danger); }
 
+/* ================= Log viewer ================= */
+.log-panel .panel-body { padding: 0; }
+.log-viewer {
+  max-height: 360px;
+  overflow-y: auto;
+  padding: 12px 18px 14px;
+  font-family: "SF Mono", "Menlo", ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  background: var(--bg-elev-2);
+}
+.log-line {
+  padding: 2px 0;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.log-line .lv-time { color: var(--text-subtle); margin-right: 8px; }
+.log-line .lv-tag { display: inline-block; width: 56px; font-weight: 600; margin-right: 8px; }
+.log-line.level-INFO .lv-tag { color: var(--info); }
+.log-line.level-SUCCESS .lv-tag { color: var(--success); }
+.log-line.level-WARNING .lv-tag { color: var(--warning); }
+.log-line.level-ERROR .lv-tag,
+.log-line.level-CRITICAL .lv-tag { color: var(--danger); }
+.log-line.level-DEBUG .lv-tag { color: var(--text-muted); }
+.log-empty {
+  padding: 28px 18px; text-align: center;
+  color: var(--text-subtle); font-size: 13px;
+}
+.log-toolbar {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--text-muted);
+  padding: 4px 10px; border-radius: 6px;
+  background: var(--bg-elev-2); border: 1px solid var(--border);
+  cursor: pointer;
+  transition: all var(--trans);
+}
+.log-toolbar:hover { color: var(--text); border-color: var(--border-strong); }
+.log-toolbar input { accent-color: var(--brand); }
+
 /* ================= Responsive ================= */
 @media (max-width: 720px) {
   .topbar { padding: 12px 16px; }
@@ -438,7 +494,8 @@ a { color: inherit; text-decoration: none; }
   .streamer-row > .status-badge { grid-area: status; }
   .streamer-row > .streamer-info { grid-area: info; }
   .streamer-row > .quality-badge { display: none; }
-  .streamer-row > .row-actions { grid-area: actions; display: flex; gap: 6px; justify-self: end; }
+  .streamer-row > .row-actions { grid-area: actions; justify-self: end; }
+  .log-viewer { max-height: 260px; }
 }
 
 /* subtle transitions for list updates */
@@ -513,38 +570,6 @@ a { color: inherit; text-decoration: none; }
       </div>
     </section>
 
-    <!-- ================= Recording feed ================= -->
-    <section class="section">
-      <div class="panel">
-        <div class="panel-head">
-          <div class="panel-title">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="3" fill="currentColor"></circle></svg>
-            正在录制
-          </div>
-          <span class="count-pill">{{ status.recordings.length }}</span>
-        </div>
-        <div class="panel-body">
-          <div v-if="status.recordings.length === 0" class="empty">
-            <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
-            <div>暂无正在录制的直播</div>
-          </div>
-          <transition-group name="list" tag="div">
-            <div v-for="rec in status.recordings" :key="rec.name" class="rec-row">
-              <div class="rec-live-dot"></div>
-              <div class="rec-info">
-                <div class="rec-name">{{ rec.name }}</div>
-                <div class="rec-meta">
-                  <span class="quality-badge">{{ rec.quality }}</span>
-                  <span>已录制</span>
-                </div>
-              </div>
-              <div class="rec-duration">{{ rec.duration }}</div>
-            </div>
-          </transition-group>
-        </div>
-      </div>
-    </section>
-
     <!-- ================= Streamers ================= -->
     <section class="section">
       <div class="panel">
@@ -593,20 +618,58 @@ a { color: inherit; text-decoration: none; }
                 <div class="streamer-name">
                   <span v-if="s.name">{{ s.name }}</span>
                   <span v-else class="streamer-name-empty">未命名主播</span>
+                  <span v-if="s.is_recording && !s.paused && recDurationOf(s.url)"
+                        class="rec-duration-chip" title="录制时长">
+                    <span class="dot"></span>{{ recDurationOf(s.url) }}
+                  </span>
                 </div>
                 <div class="streamer-url" :title="s.url">{{ s.url }}</div>
               </div>
               <span class="quality-badge">{{ s.quality }}</span>
-              <span class="row-actions" style="display: contents;"></span>
-              <button class="btn-icon" @click="toggleStreamer(s)" :title="s.paused ? '恢复' : '暂停'">
-                <svg v-if="s.paused" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-                <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
-              </button>
-              <button class="btn-icon danger" @click="deleteStreamer(s)" title="删除">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"></path></svg>
-              </button>
+              <div class="row-actions">
+                <a class="btn-icon" :href="normalizedUrl(s.url)" target="_blank" rel="noopener" title="跳转到直播间">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+                </a>
+                <button class="btn-icon" @click="toggleStreamer(s)" :title="s.paused ? '恢复' : '暂停'">
+                  <svg v-if="s.paused" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                  <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
+                </button>
+                <button class="btn-icon danger" @click="deleteStreamer(s)" title="删除">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"></path></svg>
+                </button>
+              </div>
             </div>
           </transition-group>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= Logs ================= -->
+    <section class="section">
+      <div class="panel log-panel">
+        <div class="panel-head">
+          <div class="panel-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><line x1="10" y1="9" x2="8" y2="9"></line></svg>
+            运行日志
+          </div>
+          <span class="count-pill">{{ logs.length }}</span>
+          <div class="panel-spacer"></div>
+          <label class="log-toolbar" title="新日志到达时自动滚动到底部">
+            <input type="checkbox" v-model="autoScroll"> 自动滚动
+          </label>
+          <button class="btn btn-ghost btn-sm" @click="refreshLogs" title="立即刷新日志">
+            刷新
+          </button>
+        </div>
+        <div class="panel-body">
+          <div v-if="logs.length === 0" class="log-empty">暂无日志</div>
+          <div v-else ref="logViewer" class="log-viewer">
+            <div v-for="(line, i) in logs" :key="i" class="log-line" :class="'level-' + line.level">
+              <span class="lv-time">{{ line.time }}</span>
+              <span class="lv-tag">{{ line.level }}</span>
+              <span>{{ line.message }}</span>
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -667,6 +730,9 @@ createApp({
 
     const status = reactive({ monitoring: 0, recording_count: 0, error_count: 0, max_request: 0, recordings: [] });
     const streamers = ref([]);
+    const logs = ref([]);
+    const autoScroll = ref(true);
+    const logViewer = ref(null);
     const showAdd = ref(false);
     const adding = ref(false);
     const newStreamer = reactive({ url: '', quality: '原画', name: '' });
@@ -714,6 +780,35 @@ createApp({
         streamers.value = await r.json();
       } catch {}
     }
+    async function fetchLogs() {
+      try {
+        const r = await fetch('/api/logs?limit=200');
+        const d = await r.json();
+        const incoming = d.logs || [];
+        const prev = logs.value;
+        const last = prev[prev.length - 1];
+        const nlast = incoming[incoming.length - 1];
+        if (incoming.length === prev.length &&
+            last?.time === nlast?.time &&
+            last?.message === nlast?.message) return;
+        logs.value = incoming;
+        if (autoScroll.value) {
+          await nextTick();
+          const el = logViewer.value;
+          if (el) el.scrollTop = el.scrollHeight;
+        }
+      } catch {}
+    }
+    function refreshLogs() { fetchLogs(); }
+
+    function normalizedUrl(u) {
+      if (!u) return '#';
+      return /^https?:\/\//.test(u) ? u : 'https://' + u;
+    }
+    function recDurationOf(url) {
+      const rec = status.recordings.find(r => r.url === url);
+      return rec ? rec.duration : '';
+    }
 
     function statusClass(s) {
       if (s.paused) return 'paused';
@@ -734,13 +829,25 @@ createApp({
       return true;
     }
 
+    function statusRank(s) {
+      if (s.paused) return 2;
+      if (s.is_recording) return 0;
+      return 1;
+    }
+
     const filteredStreamers = computed(() => {
       const q = search.value.trim().toLowerCase();
-      return streamers.value.filter(s => {
-        if (!matchTab(s, tab.value)) return false;
-        if (!q) return true;
-        return (s.name || '').toLowerCase().includes(q) || s.url.toLowerCase().includes(q);
-      });
+      return streamers.value
+        .filter(s => {
+          if (!matchTab(s, tab.value)) return false;
+          if (!q) return true;
+          return (s.name || '').toLowerCase().includes(q) || s.url.toLowerCase().includes(q);
+        })
+        .sort((a, b) => {
+          const d = statusRank(a) - statusRank(b);
+          if (d !== 0) return d;
+          return (a.name || '').localeCompare(b.name || '');
+        });
     });
 
     function countByTab(t) {
@@ -815,17 +922,19 @@ createApp({
     applyTheme();
 
     onMounted(() => {
-      fetchStatus(); fetchStreamers();
-      timer = setInterval(() => { fetchStatus(); fetchStreamers(); }, 3000);
+      fetchStatus(); fetchStreamers(); fetchLogs();
+      timer = setInterval(() => { fetchStatus(); fetchStreamers(); fetchLogs(); }, 3000);
     });
     onUnmounted(() => clearInterval(timer));
 
     return {
-      status, streamers, showAdd, adding, newStreamer, toast,
+      status, streamers, logs, autoScroll, logViewer,
+      showAdd, adding, newStreamer, toast,
       search, tab, tabs, theme, urlInput,
       filteredStreamers, countByTab,
       statusClass, statusLabel,
-      toggleTheme,
+      toggleTheme, refreshLogs,
+      normalizedUrl, recDurationOf,
       openAdd, closeAdd, addStreamer, deleteStreamer, toggleStreamer,
     };
   }

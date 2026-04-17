@@ -444,7 +444,7 @@ def start_record(
                                 with runtime.state_lock:
                                     runtime.recording.add(record_name)
                                     runtime.recording_time_list[record_name] = [
-                                        start_record_time, record_quality_zh
+                                        start_record_time, record_quality_zh, record_url
                                     ]
 
                                 if settings.show_url:
