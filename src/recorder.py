@@ -18,7 +18,9 @@ import subprocess
 import threading
 import time
 from collections import deque
-from typing import TextIO
+from typing import Literal, TextIO
+
+RecordResult = Literal["stop", "corrupt_restart", "ended", "finished"]
 
 from . import runtime, spider, stream, utils
 from .config_loader import Settings
@@ -178,8 +180,11 @@ def _should_restart_for_corruption(
 def _stop_ffmpeg_process(process: subprocess.Popen[str]) -> None:
     if os.name == "nt":
         if process.stdin:
-            process.stdin.write("q")
-            process.stdin.close()
+            try:
+                process.stdin.write("q")
+                process.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
     else:
         process.send_signal(signal.SIGINT)
 
@@ -191,18 +196,24 @@ def _stop_ffmpeg_process(process: subprocess.Popen[str]) -> None:
         process.wait()
 
 
+def _log_recent_output(log_fn, record_name: str, lines: deque[str]) -> None:
+    if lines:
+        log_fn(f"{record_name} ffmpeg 最近输出:\n" + "\n".join(lines))
+
+
 def _check_subprocess(
     record_name: str,
     record_url: str,
     ffmpeg_command: list[str],
     save_type: str,
     settings: Settings,
-) -> str:
+) -> RecordResult:
     """启动 ffmpeg 并阻塞监视。
 
     Returns:
         stop: 因注释或程序退出而主动关停（调用方应 return）
-        restart: 录制中检测到坏流或异常退出，需要快速重试
+        corrupt_restart: 检测到坏流主动中断，应按 corrupt_restart_delay 快速重试
+        ended: ffmpeg 非 0 退出（下播/断流/源失效等），按默认节奏重试
         finished: 录制正常结束
     """
     save_file_path = ffmpeg_command[-1]
@@ -221,6 +232,7 @@ def _check_subprocess(
     reader = threading.Thread(target=_stream_reader, args=(process.stdout, output_queue), daemon=True)
     reader.start()
     corrupt_window: deque[float] = deque()
+    recent_lines: deque[str] = deque(maxlen=30)
     forced_restart = False
 
     while process.poll() is None:
@@ -235,6 +247,8 @@ def _check_subprocess(
         except queue.Empty:
             continue
 
+        recent_lines.append(line)
+
         if _should_restart_for_corruption(line, corrupt_window, settings):
             logger.warning(
                 f"[{record_name}] 在 {settings.corrupt_error_window_seconds} 秒内累计检测到 "
@@ -244,23 +258,30 @@ def _check_subprocess(
             _stop_ffmpeg_process(process)
             break
 
+    # 进程已退出/被中断，把 pipe 里剩下的几行也捞出来，便于诊断
+    reader.join(timeout=2)
+    while True:
+        try:
+            recent_lines.append(output_queue.get_nowait())
+        except queue.Empty:
+            break
+
     return_code = process.returncode
     stop_time = time.strftime("%Y-%m-%d %H:%M:%S")
+    result: RecordResult
     if forced_restart:
         logger.warning(f"{record_name} {stop_time} 已终止当前录制，准备重新拉流")
-        with runtime.state_lock:
-            runtime.recording.discard(record_name)
-            runtime.recording_time_list.pop(record_name, None)
-        return "restart"
-
-    if return_code == 0:
+        _log_recent_output(logger.warning, record_name, recent_lines)
+        result = "corrupt_restart"
+    elif return_code == 0:
         if settings.converts_to_mp4 and save_type == "TS":
             _spawn_convert(save_file_path, settings.split_video_by_time, settings)
         logger.info(f"{record_name} {stop_time} 直播录制完成")
         result = "finished"
     else:
         logger.error(f"{record_name} {stop_time} 直播录制出错，返回码: {return_code}")
-        result = "restart"
+        _log_recent_output(logger.error, record_name, recent_lines)
+        result = "ended"
 
     with runtime.state_lock:
         runtime.recording.discard(record_name)
@@ -279,9 +300,8 @@ _USER_AGENT = (
 def _ffmpeg_prologue(real_url: str, proxy_addr: str | None) -> list[str]:
     cmd = [
         "ffmpeg", "-y",
-        "-v", "verbose",
+        "-v", "warning",
         "-rw_timeout", "15000000",
-        "-loglevel", "error",
         "-hide_banner",
         "-user_agent", _USER_AGENT,
         "-protocol_whitelist", "rtmp,crypto,file,http,https,tcp,tls,udp,rtp,httpproxy",
@@ -350,12 +370,13 @@ def _record_once(
     record_name: str,
     record_url: str,
     settings: Settings,
-) -> str:
+) -> RecordResult:
     """执行一次录制（一场直播一个文件）。
 
     Returns:
         stop: 因注释/退出需要整体 return
-        restart: 当前录制已中断，需要快速重试
+        corrupt_restart: 检测到坏流主动中断，应快速重试
+        ended: ffmpeg 非 0 退出（下播/断流/源失效等），按默认节奏重试
         finished: 当前直播正常结束
     """
     now = datetime.datetime.today().strftime("%Y-%m-%d_%H-%M-%S")
@@ -377,23 +398,14 @@ def _record_once(
         ffmpeg_command.extend(_FORMAT_ARGS[record_save_type])
     ffmpeg_command.append(save_file_path)
 
-    try:
-        result = _check_subprocess(
-            record_name, record_url, ffmpeg_command, record_save_type, settings
-        )
-        if result == "stop":
-            if record_save_type == "TS":
-                _spawn_convert(save_file_path, segmented, settings)
-            return "stop"
-        if result == "restart":
-            return "restart"
-        if result == "finished":
-            return "finished"
-    except subprocess.CalledProcessError as e:
-        logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
-        with runtime.max_request_lock:
-            runtime.error_count += 1
-            runtime.error_window.append(1)
+    result = _check_subprocess(
+        record_name, record_url, ffmpeg_command, record_save_type, settings
+    )
+
+    if result == "stop":
+        if record_save_type == "TS":
+            _spawn_convert(save_file_path, segmented, settings)
+        return "stop"
 
     # FLV 格式结束时走独立转码（区别于 TS：只有 FLV 这里是无条件转）
     if record_save_type == "FLV" and settings.converts_to_mp4:
@@ -402,7 +414,7 @@ def _record_once(
         except Exception as e:
             logger.error(f"转码失败: {e}")
 
-    return "restart"
+    return result
 
 
 # ---------- 目录命名 ---------------------------------------------------------
@@ -462,7 +474,6 @@ def start_record(
             next_wait_seconds: int | None = None
 
             while True:
-                loop_log_name = f"序号{count_variable}"
                 try:
                     if "douyin.com/" not in record_url:
                         logger.error(f"{record_url} 不支持的直播地址，仅支持抖音直播")
@@ -507,7 +518,6 @@ def start_record(
                     else:
                         anchor_name = clean_name(anchor_name, settings.clean_emoji)
                         record_name = f"序号{count_variable} {anchor_name}"
-                        loop_log_name = record_name
 
                         if record_url in runtime.url_comments:
                             logger.info(f"[{anchor_name}] 已被注释，本条线程将会退出")
@@ -521,11 +531,7 @@ def start_record(
                             )
                             run_once = True
 
-                        if not port_info["is_live"]:
-                            logger.info(f"{record_name} 循环值守中，当前未开播")
-                        else:
-                            logger.info(f"{record_name} 正在直播中")
-
+                        if port_info["is_live"]:
                             flv_url = port_info.get("flv_url")
                             codec = utils.get_query_params(flv_url, "codec") if flv_url else None
                             is_h265 = bool(codec and codec[0] == "h265")
@@ -571,7 +577,7 @@ def start_record(
                                     return
                                 if should_return == "finished":
                                     next_wait_seconds = 30
-                                elif should_return == "restart":
+                                elif should_return == "corrupt_restart":
                                     next_wait_seconds = max(1, settings.corrupt_restart_delay)
 
                 except Exception as e:
@@ -588,7 +594,6 @@ def start_record(
                 if next_wait_seconds is not None:
                     wait_seconds = next_wait_seconds
                     next_wait_seconds = None
-                logger.info(f"{loop_log_name} {wait_seconds} 秒后开始下一轮值守检查")
                 time.sleep(wait_seconds)
         except Exception as e:
             logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
