@@ -79,4 +79,8 @@ class Settings:
         self.delete_origin_file = self._bool(g("录制设置", "追加格式后删除原文件", "否"), False)
         self.split_video_by_time = self._bool(g("录制设置", "分段录制是否开启", "否"), False)
         self.split_time = str(g("录制设置", "视频分段时间(秒)", 1800))
+        self.auto_restart_on_corrupt = self._bool(g("录制设置", "自动检测花屏并重录", "是"), True)
+        self.corrupt_error_threshold = int(g("录制设置", "花屏检测错误阈值", 8))
+        self.corrupt_error_window_seconds = int(g("录制设置", "花屏检测时间窗口(秒)", 20))
+        self.corrupt_restart_delay = int(g("录制设置", "花屏重录冷却时间(秒)", 3))
         self.dy_cookie = g("Cookie", "抖音cookie", "")
