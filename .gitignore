@@ -167,3 +167,11 @@ cython_debug/
 #.idea/
 
 backup_config/
+
+# Local agent / assistant files
+claude.md
+CLAUDE.md
+codex.md
+CODEX.md
+.codex/
+config/.codex/
