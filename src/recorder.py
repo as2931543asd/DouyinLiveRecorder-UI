@@ -10,12 +10,15 @@ from __future__ import annotations
 import datetime
 import glob
 import os
+import queue
 import random
 import re
 import signal
 import subprocess
 import threading
 import time
+from collections import deque
+from typing import TextIO
 
 from . import runtime, spider, stream, utils
 from .config_loader import Settings
@@ -32,6 +35,19 @@ _QUALITY_MAPPING = {
     "标清": "SD",
     "流畅": "LD",
 }
+
+_CORRUPT_PATTERNS = (
+    "packet corrupt",
+    "corrupt input packet",
+    "pes packet size mismatch",
+    "continuity check failed",
+    "error while decoding",
+    "non-existing pps",
+    "missing picture in access unit",
+    "concealing",
+    "invalid nal unit",
+    "decode_slice_header error",
+)
 
 
 # ---------- 命名 / 画质 ------------------------------------------------------
@@ -126,52 +142,130 @@ def clear_record_info(record_name: str, record_url: str) -> None:
         logger.info(f"[{record_name}] 已从录制列表中移除")
 
 
+def _stream_reader(pipe: TextIO | None, output_queue: queue.Queue[str]) -> None:
+    if pipe is None:
+        return
+    try:
+        for raw_line in iter(pipe.readline, ""):
+            if not raw_line:
+                break
+            output_queue.put(raw_line.rstrip())
+    finally:
+        pipe.close()
+
+
+def _should_restart_for_corruption(
+    line: str,
+    error_window: deque[float],
+    settings: Settings,
+) -> bool:
+    if not settings.auto_restart_on_corrupt:
+        return False
+
+    lowered = line.lower()
+    if not any(pattern in lowered for pattern in _CORRUPT_PATTERNS):
+        return False
+
+    now = time.time()
+    error_window.append(now)
+    threshold = max(1, settings.corrupt_error_threshold)
+    window_seconds = max(1, settings.corrupt_error_window_seconds)
+    while error_window and now - error_window[0] > window_seconds:
+        error_window.popleft()
+    return len(error_window) >= threshold
+
+
+def _stop_ffmpeg_process(process: subprocess.Popen[str]) -> None:
+    if os.name == "nt":
+        if process.stdin:
+            process.stdin.write("q")
+            process.stdin.close()
+    else:
+        process.send_signal(signal.SIGINT)
+
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        logger.warning("ffmpeg 在结束信号后未及时退出，已强制终止")
+        process.kill()
+        process.wait()
+
+
 def _check_subprocess(
     record_name: str,
     record_url: str,
     ffmpeg_command: list[str],
     save_type: str,
     settings: Settings,
-) -> bool:
+) -> str:
     """启动 ffmpeg 并阻塞监视。
 
-    Returns True 表示因为 URL 被注释或程序退出而主动关停（调用方应 return）。
+    Returns:
+        stop: 因注释或程序退出而主动关停（调用方应 return）
+        restart: 录制中检测到坏流或异常退出，需要快速重试
+        finished: 录制正常结束
     """
     save_file_path = ffmpeg_command[-1]
     process = subprocess.Popen(
         ffmpeg_command,
         stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
         startupinfo=_startup_info(),
     )
+    output_queue: queue.Queue[str] = queue.Queue()
+    reader = threading.Thread(target=_stream_reader, args=(process.stdout, output_queue), daemon=True)
+    reader.start()
+    corrupt_window: deque[float] = deque()
+    forced_restart = False
 
     while process.poll() is None:
         if record_url in runtime.url_comments or runtime.exit_recording:
             logger.warning(f"[{record_name}] 录制时已被注释，本条线程将会退出")
             clear_record_info(record_name, record_url)
-            if os.name == "nt":
-                if process.stdin:
-                    process.stdin.write(b"q")
-                    process.stdin.close()
-            else:
-                process.send_signal(signal.SIGINT)
-            process.wait()
-            return True
-        time.sleep(1)
+            _stop_ffmpeg_process(process)
+            return "stop"
+
+        try:
+            line = output_queue.get(timeout=1)
+        except queue.Empty:
+            continue
+
+        if _should_restart_for_corruption(line, corrupt_window, settings):
+            logger.warning(
+                f"[{record_name}] 在 {settings.corrupt_error_window_seconds} 秒内累计检测到 "
+                f"{len(corrupt_window)} 条疑似坏流日志，主动中断后重录"
+            )
+            forced_restart = True
+            _stop_ffmpeg_process(process)
+            break
 
     return_code = process.returncode
     stop_time = time.strftime("%Y-%m-%d %H:%M:%S")
+    if forced_restart:
+        logger.warning(f"{record_name} {stop_time} 已终止当前录制，准备重新拉流")
+        with runtime.state_lock:
+            runtime.recording.discard(record_name)
+            runtime.recording_time_list.pop(record_name, None)
+        return "restart"
+
     if return_code == 0:
         if settings.converts_to_mp4 and save_type == "TS":
             _spawn_convert(save_file_path, settings.split_video_by_time, settings)
         logger.info(f"{record_name} {stop_time} 直播录制完成")
+        result = "finished"
     else:
         logger.error(f"{record_name} {stop_time} 直播录制出错，返回码: {return_code}")
+        result = "restart"
 
     with runtime.state_lock:
         runtime.recording.discard(record_name)
         runtime.recording_time_list.pop(record_name, None)
-    return False
+    return result
 
 
 # ---------- ffmpeg 组装 ------------------------------------------------------
@@ -256,10 +350,13 @@ def _record_once(
     record_name: str,
     record_url: str,
     settings: Settings,
-) -> bool:
+) -> str:
     """执行一次录制（一场直播一个文件）。
 
-    Returns True 表示因注释/退出需要整体 return。
+    Returns:
+        stop: 因注释/退出需要整体 return
+        restart: 当前录制已中断，需要快速重试
+        finished: 当前直播正常结束
     """
     now = datetime.datetime.today().strftime("%Y-%m-%d_%H-%M-%S")
     title_in_name = ""
@@ -281,13 +378,17 @@ def _record_once(
     ffmpeg_command.append(save_file_path)
 
     try:
-        comment_end = _check_subprocess(
+        result = _check_subprocess(
             record_name, record_url, ffmpeg_command, record_save_type, settings
         )
-        if comment_end:
+        if result == "stop":
             if record_save_type == "TS":
                 _spawn_convert(save_file_path, segmented, settings)
-            return True
+            return "stop"
+        if result == "restart":
+            return "restart"
+        if result == "finished":
+            return "finished"
     except subprocess.CalledProcessError as e:
         logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
         with runtime.max_request_lock:
@@ -301,7 +402,7 @@ def _record_once(
         except Exception as e:
             logger.error(f"转码失败: {e}")
 
-    return False
+    return "restart"
 
 
 # ---------- 目录命名 ---------------------------------------------------------
@@ -357,8 +458,8 @@ def start_record(
 
     while True:
         try:
-            record_finished = False
             run_once = False
+            next_wait_seconds: int | None = None
 
             while True:
                 loop_log_name = f"序号{count_variable}"
@@ -466,8 +567,12 @@ def start_record(
                                     record_url=record_url,
                                     settings=settings,
                                 )
-                                if should_return:
+                                if should_return == "stop":
                                     return
+                                if should_return == "finished":
+                                    next_wait_seconds = 30
+                                elif should_return == "restart":
+                                    next_wait_seconds = max(1, settings.corrupt_restart_delay)
 
                 except Exception as e:
                     logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
@@ -480,9 +585,9 @@ def start_record(
                 if runtime.error_count > 20:
                     wait_seconds += 60
                     logger.warning("瞬时错误过多，本轮延迟额外 +60 秒")
-                if record_finished:
-                    wait_seconds = 30
-                    record_finished = False
+                if next_wait_seconds is not None:
+                    wait_seconds = next_wait_seconds
+                    next_wait_seconds = None
                 logger.info(f"{loop_log_name} {wait_seconds} 秒后开始下一轮值守检查")
                 time.sleep(wait_seconds)
         except Exception as e:
