@@ -24,6 +24,13 @@ from .recorder import start_record
 _DOUYIN_HOSTS = {"live.douyin.com", "v.douyin.com", "www.douyin.com"}
 
 
+def _webui_display_url() -> str:
+    host = os.environ.get("WEBUI_HOST", "0.0.0.0")
+    port = os.environ.get("WEBUI_PORT", "9527")
+    display_host = "localhost" if host in ("127.0.0.1", "0.0.0.0") else host
+    return f"http://{display_host}:{port}"
+
+
 def _contains_url(s: str) -> bool:
     pattern = r"(https?://)?(www\.)?[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+(:\d+)?(/.*)?"
     return re.search(pattern, s) is not None
@@ -237,7 +244,7 @@ def ensure_url_config_file(url_config_file: str) -> str:
             if not os.path.isfile(url_config_file):
                 with open(url_config_file, "w", encoding=text_encoding) as f:
                     pass
-            logger.warning("URL_config.ini 为空，请通过 WebUI (http://localhost:8000) 添加直播间地址")
+            logger.warning(f"URL_config.ini 为空，请通过 WebUI ({_webui_display_url()}) 添加直播间地址")
     except OSError as err:
         logger.error(f"发生 I/O 错误: {err}")
     return ini_url_content

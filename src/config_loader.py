@@ -83,4 +83,5 @@ class Settings:
         self.corrupt_error_threshold = int(g("录制设置", "花屏检测错误阈值", 8))
         self.corrupt_error_window_seconds = int(g("录制设置", "花屏检测时间窗口(秒)", 20))
         self.corrupt_restart_delay = int(g("录制设置", "花屏重录冷却时间(秒)", 3))
+        self.corrupt_probe_decode = self._bool(g("录制设置", "花屏检测是否旁路解码验证", "否"), False)
         self.dy_cookie = g("Cookie", "抖音cookie", "")

@@ -98,8 +98,9 @@ def _start_background_threads(settings: Settings) -> None:
     threading.Thread(target=adjust_max_request_loop, daemon=True).start()
 
 
-def _start_webui() -> None:
-    webui_server.init(url_config_file)
+def _start_webui(settings: Settings) -> None:
+    save_path = settings.video_save_path or default_path
+    webui_server.init(url_config_file, disk_sample_path=save_path)
     host = os.environ.get("WEBUI_HOST", "0.0.0.0")
     port = int(os.environ.get("WEBUI_PORT", "9527"))
     webui_server.start_server(host=host, port=port)
@@ -120,7 +121,7 @@ def main() -> None:
     runtime.max_request = settings.max_request
     runtime.semaphore = threading.Semaphore(settings.max_request)
     _start_background_threads(settings)
-    _start_webui()
+    _start_webui(settings)
     runtime.first_run = False
 
     first_iteration = True
