@@ -206,6 +206,7 @@ def _check_subprocess(
     record_url: str,
     ffmpeg_command: list[str],
     save_type: str,
+    save_file_path: str,
     settings: Settings,
 ) -> RecordResult:
     """启动 ffmpeg 并阻塞监视。
@@ -216,7 +217,6 @@ def _check_subprocess(
         ended: ffmpeg 非 0 退出（下播/断流/源失效等），按默认节奏重试
         finished: 录制正常结束
     """
-    save_file_path = ffmpeg_command[-1]
     process = subprocess.Popen(
         ffmpeg_command,
         stdin=subprocess.PIPE,
@@ -397,9 +397,12 @@ def _record_once(
     else:
         ffmpeg_command.extend(_FORMAT_ARGS[record_save_type])
     ffmpeg_command.append(save_file_path)
+    if settings.corrupt_probe_decode:
+        # 旁路解码：不落盘，仅触发视频解码以便捕获 NAL/解码层错误日志
+        ffmpeg_command.extend(["-map", "0:v", "-an", "-f", "null", "-"])
 
     result = _check_subprocess(
-        record_name, record_url, ffmpeg_command, record_save_type, settings
+        record_name, record_url, ffmpeg_command, record_save_type, save_file_path, settings
     )
 
     if result == "stop":

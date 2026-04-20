@@ -10,10 +10,14 @@
 from __future__ import annotations
 
 import datetime
+import os
 import re
+import shutil
 import threading
+import time
 from pathlib import Path
 
+import psutil
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
@@ -30,12 +34,45 @@ static_dir = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 _url_config_file: str | None = None
+_disk_sample_path: str = os.getcwd()
+
+# 后台线程固定 1s 采样 CPU（EMA 平滑）与磁盘剩余，请求端只读不阻塞。
+_cpu_smoothed: float | None = None
+_disk_free_gb: float = 0.0
+_stats_lock = threading.Lock()
+_stats_thread_started = False
+_CPU_EMA_ALPHA = 0.3
 
 
-def init(url_config_file: str) -> None:
-    """由 main.py 调用，告知 ini 路径。"""
-    global _url_config_file
+def _stats_sampler_loop() -> None:
+    global _cpu_smoothed, _disk_free_gb
+    while True:
+        try:
+            sample = psutil.cpu_percent(interval=1.0)
+        except Exception:
+            time.sleep(1.0)
+            continue
+        try:
+            free_gb = shutil.disk_usage(_disk_sample_path).free / (1024 ** 3)
+        except Exception:
+            free_gb = 0.0
+        with _stats_lock:
+            if _cpu_smoothed is None:
+                _cpu_smoothed = sample
+            else:
+                _cpu_smoothed = _CPU_EMA_ALPHA * sample + (1 - _CPU_EMA_ALPHA) * _cpu_smoothed
+            _disk_free_gb = free_gb
+
+
+def init(url_config_file: str, disk_sample_path: str | None = None) -> None:
+    """由 main.py 调用，告知 ini 路径及磁盘检测目录。"""
+    global _url_config_file, _disk_sample_path, _stats_thread_started
     _url_config_file = url_config_file
+    if disk_sample_path:
+        _disk_sample_path = disk_sample_path
+    if not _stats_thread_started:
+        _stats_thread_started = True
+        threading.Thread(target=_stats_sampler_loop, daemon=True).start()
 
 
 # ---------- Models ----------------------------------------------------------
@@ -79,11 +116,16 @@ async def get_status():
         else:
             recordings.append({"name": rec_name, "quality": "?", "duration": "0:00:00", "url": ""})
 
+    with _stats_lock:
+        cpu_percent = _cpu_smoothed if _cpu_smoothed is not None else 0.0
+        disk_free_gb = _disk_free_gb
+
     return {
         "monitoring": monitoring_count,
         "recording_count": len(recordings),
         "error_count": runtime.error_count,
-        "max_request": runtime.max_request,
+        "cpu_percent": round(cpu_percent, 1),
+        "disk_free_gb": round(disk_free_gb, 1),
         "recordings": recordings,
     }
 
@@ -221,7 +263,7 @@ def _delete_url_line(url: str) -> None:
 
 # ---------- Start -----------------------------------------------------------
 
-def start_server(host: str = "127.0.0.1", port: int = 8000) -> None:
+def start_server(host: str = "0.0.0.0", port: int = 9527) -> None:
     config = uvicorn.Config(app, host=host, port=port, log_level="warning")
     server = uvicorn.Server(config)
     threading.Thread(target=server.run, daemon=True).start()
