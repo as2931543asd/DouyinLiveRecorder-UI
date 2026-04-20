@@ -866,8 +866,14 @@ createApp({
 
     async function openAdd() {
       showAdd.value = true;
+      if (!newStreamer.url) newStreamer.url = 'https://live.douyin.com/';
       await nextTick();
-      urlInput.value?.focus();
+      const el = urlInput.value;
+      if (el) {
+        el.focus();
+        const len = el.value.length;
+        el.setSelectionRange(len, len);
+      }
     }
     function closeAdd() {
       showAdd.value = false;
