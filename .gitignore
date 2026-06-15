@@ -169,9 +169,13 @@ cython_debug/
 backup_config/
 
 # Local agent / assistant files
+AGENTS.md
 claude.md
 CLAUDE.md
 codex.md
 CODEX.md
+.codex
 .codex/
+config/.codex
 config/.codex/
+ffmpeg/
