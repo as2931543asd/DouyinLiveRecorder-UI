@@ -175,6 +175,7 @@ async def delete_streamer(data: StreamerAction):
 @app.patch("/api/streamers/toggle")
 async def toggle_streamer(data: StreamerAction):
     url = data.url.strip()
+    paused_after_toggle = False
     with runtime.file_update_lock:
         with open(_url_config_file, "r", encoding=text_encoding, errors="ignore") as f:
             lines = f.readlines()
@@ -186,14 +187,22 @@ async def toggle_streamer(data: StreamerAction):
             if not toggled and url in stripped:
                 if stripped.startswith("#"):
                     new_lines.append(line.lstrip("#"))
+                    paused_after_toggle = False
                 else:
                     new_lines.append("#" + line)
+                    paused_after_toggle = True
                 toggled = True
             else:
                 new_lines.append(line)
 
         with open(_url_config_file, "w", encoding=text_encoding) as f:
             f.writelines(new_lines)
+
+    if toggled:
+        if paused_after_toggle:
+            _request_stop_url(url)
+        else:
+            _clear_stop_url(url)
 
     return {"ok": True}
 
@@ -259,6 +268,33 @@ def _delete_url_line(url: str) -> None:
             for line in lines:
                 if url not in line:
                     f.write(line)
+    _request_stop_url(url)
+
+
+def _url_stop_candidates(url: str) -> set[str]:
+    stripped = url.strip()
+    if not stripped:
+        return set()
+    with_scheme = stripped if "://" in stripped else "https://" + stripped
+    return {stripped, with_scheme, with_scheme.split("?")[0]}
+
+
+def _request_stop_url(url: str) -> None:
+    candidates = _url_stop_candidates(url)
+    if not candidates:
+        return
+    with runtime.state_lock:
+        for candidate in candidates:
+            if candidate not in runtime.url_comments:
+                runtime.url_comments.append(candidate)
+
+
+def _clear_stop_url(url: str) -> None:
+    candidates = _url_stop_candidates(url)
+    if not candidates:
+        return
+    with runtime.state_lock:
+        runtime.url_comments = [u for u in runtime.url_comments if u not in candidates]
 
 
 # ---------- Start -----------------------------------------------------------

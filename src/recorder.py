@@ -131,17 +131,41 @@ def _spawn_convert(save_file_path: str, segmented: bool, settings: Settings) -> 
     threading.Thread(target=target, args=(save_file_path, settings), daemon=True).start()
 
 
+def _stop_requested(record_url: str) -> bool:
+    with runtime.state_lock:
+        return runtime.exit_recording or record_url in runtime.url_comments
+
+
 def clear_record_info(record_name: str, record_url: str) -> None:
     removed = False
     with runtime.state_lock:
         runtime.recording.discard(record_name)
         runtime.recording_time_list.pop(record_name, None)
-        if record_url in runtime.url_comments and record_url in runtime.running_list:
+        if (runtime.exit_recording or record_url in runtime.url_comments) and record_url in runtime.running_list:
             runtime.running_list.remove(record_url)
-            runtime.monitoring -= 1
+            runtime.monitoring = max(0, runtime.monitoring - 1)
             removed = True
     if removed:
-        logger.info(f"[{record_name}] 已从录制列表中移除")
+        logger.info(f"[{record_name}] 已从监控列表中移除")
+
+
+def _exit_if_stop_requested(record_name: str, record_url: str) -> bool:
+    if not _stop_requested(record_url):
+        return False
+    logger.info(f"[{record_name}] 已被删除或暂停，本条线程将会退出")
+    clear_record_info(record_name, record_url)
+    return True
+
+
+def _sleep_or_stop(record_name: str, record_url: str, seconds: float) -> bool:
+    deadline = time.monotonic() + max(0, seconds)
+    while True:
+        if _exit_if_stop_requested(record_name, record_url):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(1.0, remaining))
 
 
 def _stream_reader(pipe: TextIO | None, output_queue: queue.Queue[str]) -> None:
@@ -236,8 +260,8 @@ def _check_subprocess(
     forced_restart = False
 
     while process.poll() is None:
-        if record_url in runtime.url_comments or runtime.exit_recording:
-            logger.warning(f"[{record_name}] 录制时已被注释，本条线程将会退出")
+        if _stop_requested(record_url):
+            logger.warning(f"[{record_name}] 录制时已被删除或暂停，本条线程将会退出")
             clear_record_info(record_name, record_url)
             _stop_ffmpeg_process(process)
             return "stop"
@@ -470,6 +494,7 @@ def start_record(
     """一个 URL 一个线程的主循环。"""
     record_quality_zh, record_url, anchor_name_hint = url_data
     record_quality = get_quality_code(record_quality_zh)
+    worker_name = f"序号{count_variable} {anchor_name_hint or record_url}"
 
     while True:
         try:
@@ -478,12 +503,18 @@ def start_record(
 
             while True:
                 try:
+                    if _exit_if_stop_requested(worker_name, record_url):
+                        return
+
                     if "douyin.com/" not in record_url:
                         logger.error(f"{record_url} 不支持的直播地址，仅支持抖音直播")
                         return
 
                     platform = "抖音直播"
                     with runtime.semaphore:
+                        if _exit_if_stop_requested(worker_name, record_url):
+                            return
+
                         if "v.douyin.com" not in record_url and "/user/" not in record_url:
                             json_data = runtime.run_coro(spider.get_douyin_web_stream_data(
                                 url=record_url,
@@ -521,10 +552,9 @@ def start_record(
                     else:
                         anchor_name = clean_name(anchor_name, settings.clean_emoji)
                         record_name = f"序号{count_variable} {anchor_name}"
+                        worker_name = record_name
 
-                        if record_url in runtime.url_comments:
-                            logger.info(f"[{anchor_name}] 已被注释，本条线程将会退出")
-                            clear_record_info(record_name, record_url)
+                        if _exit_if_stop_requested(record_name, record_url):
                             return
 
                         # 首次成功获取到主播名后，回写 URL_config
@@ -597,10 +627,12 @@ def start_record(
                 if next_wait_seconds is not None:
                     wait_seconds = next_wait_seconds
                     next_wait_seconds = None
-                time.sleep(wait_seconds)
+                if _sleep_or_stop(worker_name, record_url, wait_seconds):
+                    return
         except Exception as e:
             logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
             with runtime.max_request_lock:
                 runtime.error_count += 1
                 runtime.error_window.append(1)
-            time.sleep(2)
+            if _sleep_or_stop(worker_name, record_url, 2):
+                return
