@@ -71,7 +71,7 @@
     │   ├── /static
     │   │   └── index.html -> (Vue 3 单页面前端)
     ├── main.py -> (装配层: banner → ffmpeg → 主循环)
-    ├── ffmpeg_install.py -> (Windows 自动安装 ffmpeg)
+    ├── ffmpeg_install.py -> (FFmpeg 检查与官方安装提示)
 ```
 
 ## 使用说明
@@ -137,7 +137,8 @@ apt update && apt install ffmpeg
 yum install epel-release && yum install ffmpeg
 ```
 
-Windows 系统可跳过此步，程序会自动处理。
+Windows 系统也需要先安装 FFmpeg，或从 [FFmpeg 官方下载页](https://ffmpeg.org/download.html) 选择 Windows builds，
+解压后将 `ffmpeg.exe` 放入项目根目录的 `ffmpeg` 文件夹。
 
 4. 运行程序
 
