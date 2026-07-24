@@ -1,9 +1,6 @@
 # -*- coding: utf-8 -*-
-import json
 import os
-import random
 import shutil
-import string
 from pathlib import Path
 import functools
 import hashlib
@@ -12,12 +9,9 @@ import traceback
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 from collections import OrderedDict
-import execjs
 from .logger import logger
-import configparser
 
 OptionalStr = str | None
-OptionalDict = dict | None
 
 
 def trace_error_decorator(func: callable) -> callable:
@@ -25,8 +19,6 @@ def trace_error_decorator(func: callable) -> callable:
     def wrapper(*args: list, **kwargs: dict) -> Any:
         try:
             return func(*args, **kwargs)
-        except execjs.ProgramError:
-            logger.warning('Failed to execute JS code. Please check if the Node.js environment')
         except Exception as e:
             error_line = traceback.extract_tb(e.__traceback__)[-1].lineno
             error_info = f"message: type: {type(e).__name__}, {str(e)} in function {func.__name__} at line: {error_line}"
@@ -40,64 +32,6 @@ def check_md5(file_path: str | Path) -> str:
     with open(file_path, 'rb') as fp:
         file_md5 = hashlib.md5(fp.read()).hexdigest()
     return file_md5
-
-
-def dict_to_cookie_str(cookies_dict: dict) -> str:
-    cookie_str = '; '.join([f"{key}={value}" for key, value in cookies_dict.items()])
-    return cookie_str
-
-
-def read_config_value(file_path: str | Path, section: str, key: str) -> str | None:
-    config = configparser.ConfigParser()
-
-    try:
-        config.read(file_path, encoding='utf-8-sig')
-    except Exception as e:
-        logger.error(f"读取配置文件失败: {e}")
-        return None
-
-    if section in config:
-        if key in config[section]:
-            return config[section][key]
-        else:
-            logger.warning(f"配置中不存在 key [{key}]（section [{section}]）")
-    else:
-        logger.warning(f"配置中不存在 section [{section}]")
-
-    return None
-
-
-def update_config(file_path: str | Path, section: str, key: str, new_value: str) -> None:
-    config = configparser.ConfigParser()
-
-    try:
-        config.read(file_path, encoding='utf-8-sig')
-    except Exception as e:
-        logger.error(f"读取配置文件失败: {e}")
-        return
-
-    if section not in config:
-        logger.warning(f"配置中不存在 section [{section}]")
-        return
-
-    # 转义%字符
-    escaped_value = new_value.replace('%', '%%')
-    config[section][key] = escaped_value
-
-    try:
-        with open(file_path, 'w', encoding='utf-8-sig') as configfile:
-            config.write(configfile)
-        logger.info(f"已更新 [{section}] 下 {key} 的值")
-    except Exception as e:
-        logger.error(f"写入配置文件失败: {e}")
-
-
-def get_file_paths(directory: str) -> list:
-    file_paths = []
-    for root, dirs, files in os.walk(directory):
-        for file in files:
-            file_paths.append(os.path.join(root, file))
-    return file_paths
 
 
 def remove_emojis(text: str, replace_text: str = '') -> str:
@@ -155,32 +89,6 @@ def handle_proxy_addr(proxy_addr):
     return proxy_addr
 
 
-def generate_random_string(length: int) -> str:
-    characters = string.ascii_uppercase + string.digits
-    random_string = ''.join(random.choices(characters, k=length))
-    return random_string
-
-
-def jsonp_to_json(jsonp_str: str) -> OptionalDict:
-    pattern = r'(\w+)\((.*)\);?$'
-    match = re.search(pattern, jsonp_str)
-
-    if match:
-        _, json_str = match.groups()
-        json_obj = json.loads(json_str)
-        return json_obj
-    else:
-        raise Exception("No JSON data found in JSONP response.")
-
-
-def replace_url(file_path: str | Path, old: str, new: str) -> None:
-    with open(file_path, 'r', encoding='utf-8-sig') as f:
-        content = f.read()
-    if old in content:
-        with open(file_path, 'w', encoding='utf-8-sig') as f:
-            f.write(content.replace(old, new))
-
-
 def get_query_params(url: str, param_name: OptionalStr) -> dict | list[str]:
     parsed_url = urlparse(url)
     query_params = parse_qs(parsed_url.query)
@@ -190,4 +98,3 @@ def get_query_params(url: str, param_name: OptionalStr) -> dict | list[str]:
     else:
         values = query_params.get(param_name, [])
         return values
-    

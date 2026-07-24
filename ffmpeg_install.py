@@ -11,20 +11,13 @@ import os
 import platform
 import shutil
 import subprocess
-from collections.abc import Callable
-from functools import wraps
 from pathlib import Path
-from typing import TypeVar
 
 from src.logger import logger
-
-F = TypeVar("F", bound=Callable[..., object])
 
 current_platform = platform.system()
 project_dir = Path(__file__).resolve().parent
 
-# Backward-compatible names used by main.py.
-execute_dir = str(project_dir)
 current_env_path = os.environ.get("PATH", "")
 ffmpeg_path = str(project_dir / "ffmpeg")
 
@@ -95,43 +88,6 @@ def _log_detected_ffmpeg(version_line: str) -> None:
     logger.info(version_line)
 
 
-def install_ffmpeg_windows() -> bool:
-    _log_manual_install_hint()
-    return False
-
-
-def install_ffmpeg_mac() -> bool:
-    _log_manual_install_hint()
-    return False
-
-
-def install_ffmpeg_linux() -> bool:
-    _log_manual_install_hint()
-    return False
-
-
-def install_ffmpeg() -> bool:
-    if current_platform == "Windows":
-        return install_ffmpeg_windows()
-    if current_platform == "Linux":
-        return install_ffmpeg_linux()
-    if current_platform == "Darwin":
-        return install_ffmpeg_mac()
-
-    _log_manual_install_hint()
-    return False
-
-
-def ensure_ffmpeg_installed(func: F) -> F:
-    @wraps(func)
-    def wrapped_func(*args, **kwargs):
-        if check_ffmpeg():
-            return func(*args, **kwargs)
-        raise RuntimeError("ffmpeg is not installed.")
-
-    return wrapped_func  # type: ignore[return-value]
-
-
 def check_ffmpeg_installed() -> bool:
     _refresh_process_path()
 
@@ -154,4 +110,5 @@ def check_ffmpeg_installed() -> bool:
 def check_ffmpeg() -> bool:
     if check_ffmpeg_installed():
         return True
-    return install_ffmpeg()
+    _log_manual_install_hint()
+    return False

@@ -84,4 +84,10 @@ class Settings:
         self.corrupt_error_window_seconds = int(g("录制设置", "花屏检测时间窗口(秒)", 20))
         self.corrupt_restart_delay = int(g("录制设置", "花屏重录冷却时间(秒)", 3))
         self.corrupt_probe_decode = self._bool(g("录制设置", "花屏检测是否旁路解码验证", "否"), False)
+        self.fast_reconnect_delay = int(g("录制设置", "断流首次快速重连时间(秒)", 15))
+        self.reconnect_backoff_max = int(g("录制设置", "连续断流退避上限(秒)", 120))
+        self.fetch_backoff_max = int(g("录制设置", "连续抓取失败退避上限(秒)", 300))
+        self.stable_record_reset_seconds = int(
+            g("录制设置", "稳定录制后重置退避时间(秒)", 300)
+        )
         self.dy_cookie = g("Cookie", "抖音cookie", "")

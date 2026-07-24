@@ -15,13 +15,12 @@ from __future__ import annotations
 
 import os
 import signal
-import subprocess
 import sys
 import threading
 import time
 
 from ffmpeg_install import check_ffmpeg, current_env_path, ffmpeg_path
-from src import runtime, url_config, utils
+from src import live_history, runtime, url_config, utils
 from src.config_loader import Settings
 from src.file_ops import backup_file_loop
 from src.logger import logger
@@ -33,6 +32,7 @@ version = "v4.0.7"
 _script_dir = os.path.split(os.path.realpath(sys.argv[0]))[0]
 config_file = f"{_script_dir}/config/config.ini"
 url_config_file = f"{_script_dir}/config/URL_config.ini"
+live_history_file = f"{_script_dir}/config/live_history.json"
 backup_dir = f"{_script_dir}/backup_config"
 default_path = f"{_script_dir}/downloads"
 
@@ -48,22 +48,7 @@ signal.signal(signal.SIGTERM, _signal_handler)
 
 
 def _check_ffmpeg_existence() -> bool:
-    try:
-        result = subprocess.run(["ffmpeg", "-version"], check=True, capture_output=True, text=True)
-        if result.returncode == 0:
-            lines = result.stdout.splitlines()
-            logger.info(lines[0])
-            if len(lines) > 1:
-                logger.info(lines[1])
-    except subprocess.CalledProcessError as e:
-        logger.error(e)
-    except FileNotFoundError:
-        pass
-    finally:
-        if check_ffmpeg():
-            time.sleep(1)
-            return True
-    return False
+    return check_ffmpeg()
 
 
 def _print_banner() -> None:
@@ -118,6 +103,14 @@ def main() -> None:
     url_config.deduplicate_file(url_config_file) if os.path.isfile(url_config_file) else None
 
     settings = Settings(config_file)
+    live_history.init(live_history_file)
+    configured_urls = url_config.get_configured_urls(
+        url_config_file,
+        settings.video_record_quality,
+    )
+    initialized_count = live_history.initialize_missing(configured_urls)
+    if initialized_count:
+        logger.info(f"已为 {initialized_count} 个无历史主播设置直播时间统计起点")
     runtime.max_request = settings.max_request
     runtime.semaphore = threading.Semaphore(settings.max_request)
     _start_background_threads(settings)

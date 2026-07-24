@@ -4,7 +4,7 @@
 主循环每轮会调用 `load_and_dispatch`：
 1. 读 ini，按注释 / 画质 / 自定义名拆分
 2. 新出现的 URL 启动一个 `recorder.start_record` daemon 线程
-3. 回填已解析出的主播名（通过 `need_update_line_list`）
+3. 将 worker 抓到的最新主播名原子回填到配置
 """
 
 from __future__ import annotations
@@ -14,8 +14,9 @@ import random
 import re
 import threading
 import time
+from pathlib import Path
 
-from . import runtime, utils
+from . import live_history, runtime, utils
 from .config_loader import QUALITY_CHOICES, Settings, text_encoding
 from .file_ops import delete_line, update_file
 from .logger import logger
@@ -78,6 +79,109 @@ def _normalize_line(line: str, default_quality: str) -> str | None:
     if name:
         normalized += f",{name}"
     return normalized
+
+
+def get_configured_urls(url_config_file: str, default_quality: str) -> list[str]:
+    """读取全部有效抖音 URL（包含暂停项），供启动时初始化历史统计。"""
+    urls: list[str] = []
+    try:
+        with runtime.file_update_lock:
+            with open(url_config_file, "r", encoding=text_encoding, errors="ignore") as file:
+                lines = list(file)
+    except FileNotFoundError:
+        return urls
+
+    for origin_line in lines:
+        line = origin_line.strip().lstrip("#").strip()
+        parsed = _parse_line(line, default_quality) if line else None
+        if not parsed:
+            continue
+        _, url, _ = parsed
+        url = _ensure_scheme(url)
+        parts = url.split("/")
+        host = parts[2] if len(parts) > 2 else ""
+        if host in _DOUYIN_HOSTS:
+            normalized_url = url.split("?")[0]
+            if normalized_url not in urls:
+                urls.append(normalized_url)
+    return urls
+
+
+def _apply_name_updates(
+    url_config_file: str,
+    updates: dict[str, str],
+    default_quality: str,
+) -> int:
+    """按 URL 精确更新主播名，保留暂停状态并原子替换配置文件。"""
+    if not updates:
+        return 0
+
+    target_updates = {_ensure_scheme(url).split("?")[0]: name for url, name in updates.items()}
+    changed = 0
+
+    with runtime.file_update_lock:
+        path = Path(url_config_file)
+        try:
+            lines = path.read_text(encoding=text_encoding, errors="ignore").splitlines(keepends=True)
+        except FileNotFoundError:
+            return 0
+
+        rewritten: list[str] = []
+        for origin_line in lines:
+            newline = "\n" if origin_line.endswith(("\n", "\r")) else ""
+            stripped = origin_line.strip()
+            paused = stripped.startswith("#")
+            content = stripped.lstrip("#").strip() if paused else stripped
+            parsed = _parse_line(content, default_quality) if content else None
+            if not parsed:
+                rewritten.append(origin_line)
+                continue
+
+            quality, url, old_name = parsed
+            normalized_url = _ensure_scheme(url).split("?")[0]
+            latest_name = target_updates.get(normalized_url)
+            if latest_name is None:
+                rewritten.append(origin_line)
+                continue
+
+            display_old_name = old_name.replace("主播:", "", 1).strip()
+            if display_old_name == latest_name:
+                rewritten.append(origin_line)
+                continue
+
+            prefix = "#" if paused else ""
+            rewritten.append(f"{prefix}{quality},{normalized_url},主播: {latest_name}{newline}")
+            changed += 1
+
+        if changed:
+            temporary = path.with_name(f".{path.name}.tmp")
+            temporary.write_text("".join(rewritten), encoding=text_encoding)
+            os.replace(temporary, path)
+
+    return changed
+
+
+def _drain_name_updates(url_config_file: str, default_quality: str) -> None:
+    with runtime.state_lock:
+        # 每轮也拿当前抓取值校验一次，使用户或外部工具手工改回旧名后，
+        # 不必等主播再次改名即可恢复监控名与录制目录的一致性。
+        updates = dict(runtime.current_anchor_names)
+        updates.update(runtime.pending_name_updates)
+        runtime.pending_name_updates.clear()
+
+    if not updates:
+        return
+
+    try:
+        changed = _apply_name_updates(url_config_file, updates, default_quality)
+        if changed:
+            logger.info(f"已同步 {changed} 个主播的最新昵称到监控配置")
+    except Exception:
+        # 写入失败时放回队列，下一轮继续尝试，不要求重启监控进程。
+        with runtime.state_lock:
+            for url, name in updates.items():
+                runtime.pending_name_updates.setdefault(url, name)
+        raise
 
 
 def load_and_dispatch(
@@ -159,21 +263,11 @@ def load_and_dispatch(
                             start_str="#", fallback_content=ini_url_content,
                         )
 
-        # 回填主播名
-        while runtime.need_update_line_list:
-            a = runtime.need_update_line_list.pop()
-            replace_words = a.split("|")
-            if replace_words[0] != replace_words[1]:
-                if replace_words[1].startswith("#"):
-                    start_with: str | None = "#"
-                    new_word = replace_words[1][1:]
-                else:
-                    start_with = None
-                    new_word = replace_words[1]
-                update_file(
-                    url_config_file, old_str=replace_words[0], new_str=new_word,
-                    start_str=start_with, fallback_content=ini_url_content,
-                )
+        initialized_count = live_history.initialize_missing(list(seen_urls))
+        if initialized_count:
+            logger.info(f"已为 {initialized_count} 个新增主播设置直播时间统计起点")
+
+        _drain_name_updates(url_config_file, settings.video_record_quality)
 
         # 已从 ini 中整行删除的直播间：借用 url_comments 作为停止信号，
         # 让 worker 走既有的退出路径（clear_record_info 会摘掉 running_list）。
@@ -186,7 +280,8 @@ def load_and_dispatch(
         with runtime.state_lock:
             runtime.url_comments = new_url_comments
 
-        runtime.text_no_repeat_url = list(set(runtime.url_tuples_list))
+        # dict 保序去重，确保首次缓启动遵循 URL_config 的可预期顺序。
+        runtime.text_no_repeat_url = list(dict.fromkeys(runtime.url_tuples_list))
 
         if runtime.text_no_repeat_url:
             pending_urls = [

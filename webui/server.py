@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from src import runtime
+from src import live_history, runtime
 from src.config_loader import text_encoding
 from src.logger import get_recent_logs
 
@@ -149,6 +149,8 @@ async def add_streamer(data: StreamerAdd):
     url_host = url.split("/")[2] if len(url.split("/")) > 2 else ""
     if url_host not in ("live.douyin.com", "v.douyin.com", "www.douyin.com"):
         return {"ok": False, "error": "仅支持抖音直播链接"}
+    if url_host == "live.douyin.com":
+        url = url.split("?")[0]
 
     for s in _parse_url_config():
         if s["url"] == url:
@@ -162,6 +164,7 @@ async def add_streamer(data: StreamerAdd):
     with runtime.file_update_lock:
         with open(_url_config_file, "a", encoding=text_encoding) as f:
             f.write(line)
+    live_history.initialize_missing([url])
 
     return {"ok": True}
 
@@ -211,8 +214,12 @@ async def toggle_streamer(data: StreamerAction):
 
 def _parse_url_config() -> list[dict]:
     streamers: list[dict] = []
+    history_snapshot = live_history.get_snapshot()
+    now = datetime.datetime.now().astimezone()
     with runtime.state_lock:
         running_snapshot = list(runtime.running_list)
+        current_name_snapshot = dict(runtime.current_anchor_names)
+        live_url_snapshot = set(runtime.live_urls)
         recording_url_snapshot = {
             entry[2]
             for entry in runtime.recording_time_list.values()
@@ -244,16 +251,42 @@ def _parse_url_config() -> list[dict]:
 
                 is_recording = url in recording_url_snapshot
                 is_monitoring = url in running_snapshot and not paused
-                state = "已暂停" if paused else ("录制中" if is_recording else "监控中")
+                is_live = url in live_url_snapshot and not paused
+                if paused:
+                    state = "已暂停"
+                elif is_recording:
+                    state = "录制中"
+                elif is_live:
+                    state = "重连中"
+                else:
+                    state = "监控中"
+                history = history_snapshot.get(url, {})
+                ended_at_raw = history.get("last_ended_at")
+                elapsed_seconds: int | None = None
+                if ended_at_raw:
+                    try:
+                        ended_at = datetime.datetime.fromisoformat(ended_at_raw)
+                        if ended_at.tzinfo is None:
+                            ended_at = ended_at.astimezone()
+                        elapsed_seconds = max(0, int((now - ended_at).total_seconds()))
+                    except (TypeError, ValueError):
+                        ended_at_raw = None
+
+                configured_name = name.replace("主播: ", "").strip()
 
                 streamers.append({
                     "url": url,
                     "quality": quality,
-                    "name": name.replace("主播: ", "").strip(),
+                    "name": current_name_snapshot.get(url, configured_name),
                     "paused": paused,
                     "is_recording": is_recording and not paused,
+                    "is_live": is_live,
                     "is_monitoring": is_monitoring,
                     "state": state,
+                    "last_live_ended_at": ended_at_raw,
+                    "last_live_elapsed_seconds": elapsed_seconds,
+                    "last_live_duration_seconds": history.get("last_duration_seconds"),
+                    "last_live_is_baseline": bool(history.get("is_baseline")),
                 })
     except FileNotFoundError:
         pass
@@ -269,6 +302,11 @@ def _delete_url_line(url: str) -> None:
                 if url not in line:
                     f.write(line)
     _request_stop_url(url)
+    live_history.remove(url)
+    with runtime.state_lock:
+        runtime.current_anchor_names.pop(url, None)
+        runtime.pending_name_updates.pop(url, None)
+        runtime.live_urls.discard(url)
 
 
 def _url_stop_candidates(url: str) -> set[str]:

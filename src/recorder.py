@@ -22,7 +22,7 @@ from typing import Literal, TextIO
 
 RecordResult = Literal["stop", "corrupt_restart", "ended", "finished"]
 
-from . import runtime, spider, stream, utils
+from . import live_history, runtime, spider, stream, utils
 from .config_loader import Settings
 from .logger import logger
 
@@ -64,6 +64,41 @@ def clean_name(text: str, clean_emoji: bool) -> str:
 
 def get_quality_code(quality_zh: str) -> str | None:
     return _QUALITY_MAPPING.get(quality_zh)
+
+
+def _configured_anchor_name(raw_name: str, clean_emoji: bool) -> str:
+    """把 URL_config 中的可选 `主播:` 前缀去掉后用于名称比较。"""
+    name = raw_name.strip()
+    if "主播:" in name:
+        name = name.split("主播:", maxsplit=1)[1].strip()
+    return clean_name(name, clean_emoji) if name else ""
+
+
+def _retry_delay(
+    base_seconds: int,
+    consecutive_failures: int,
+    max_seconds: int,
+    jitter_seconds: int = 5,
+) -> int:
+    """指数退避并加入向下抖动，既快速首连也避免多个 worker 同时请求。"""
+    base = max(1, base_seconds)
+    ceiling = max(base, max_seconds)
+    exponent = min(max(0, consecutive_failures), 20)
+    nominal = min(ceiling, base * (2 ** exponent))
+    jitter = min(max(0, jitter_seconds), nominal - 1)
+    return random.randint(nominal - jitter, nominal)
+
+
+def _corrupt_retry_delay(
+    initial_seconds: int,
+    consecutive_restarts: int,
+    max_seconds: int = 120,
+) -> int:
+    """花屏连续出现时使用 3 → 10 → 30 → 120 秒的独立退避。"""
+    initial = max(1, initial_seconds)
+    stages = (initial, max(initial, 10), max(initial, 30), max(initial, 120))
+    delay = stages[min(max(0, consecutive_restarts), len(stages) - 1)]
+    return min(max(initial, max_seconds), delay)
 
 
 # ---------- 子进程工具 -------------------------------------------------------
@@ -141,6 +176,7 @@ def clear_record_info(record_name: str, record_url: str) -> None:
     with runtime.state_lock:
         runtime.recording.discard(record_name)
         runtime.recording_time_list.pop(record_name, None)
+        runtime.live_urls.discard(record_url)
         if (runtime.exit_recording or record_url in runtime.url_comments) and record_url in runtime.running_list:
             runtime.running_list.remove(record_url)
             runtime.monitoring = max(0, runtime.monitoring - 1)
@@ -495,10 +531,15 @@ def start_record(
     record_quality_zh, record_url, anchor_name_hint = url_data
     record_quality = get_quality_code(record_quality_zh)
     worker_name = f"序号{count_variable} {anchor_name_hint or record_url}"
+    configured_anchor_name = _configured_anchor_name(anchor_name_hint, settings.clean_emoji)
+    live_session_started_at: datetime.datetime | None = None
+    last_successful_record_end: datetime.datetime | None = None
+    disconnect_streak = 0
+    corrupt_restart_streak = 0
+    poll_error_streak = 0
 
     while True:
         try:
-            run_once = False
             next_wait_seconds: int | None = None
 
             while True:
@@ -531,18 +572,11 @@ def start_record(
                             stream.get_douyin_stream_url(json_data, record_quality, settings.proxy_addr)
                         )
 
-                    # ---- 名称归一 -------------------------------------------
-                    anchor_name = anchor_name_hint
-                    if anchor_name and "主播:" in anchor_name:
-                        anchor_split = anchor_name.split("主播:")
-                        if len(anchor_split) > 1 and anchor_split[1].strip():
-                            anchor_name = anchor_split[1].strip()
-                        else:
-                            anchor_name = port_info.get("anchor_name", "")
-                    else:
-                        anchor_name = port_info.get("anchor_name", "")
-
-                    if not port_info.get("anchor_name", ""):
+                    # 抖音当前昵称是录制目录与 WebUI 的唯一事实来源；配置中的
+                    # 名称仅用于首次抓取成功前的日志展示。
+                    fetched_anchor_name = port_info.get("anchor_name", "")
+                    if not fetched_anchor_name:
+                        poll_error_streak += 1
                         logger.warning(
                             f"序号{count_variable} 网址内容获取失败，进行重试中… 地址: {url_data}"
                         )
@@ -550,21 +584,27 @@ def start_record(
                             runtime.error_count += 1
                             runtime.error_window.append(1)
                     else:
-                        anchor_name = clean_name(anchor_name, settings.clean_emoji)
+                        poll_error_streak = 0
+                        anchor_name = clean_name(fetched_anchor_name, settings.clean_emoji)
                         record_name = f"序号{count_variable} {anchor_name}"
                         worker_name = record_name
 
                         if _exit_if_stop_requested(record_name, record_url):
                             return
 
-                        # 首次成功获取到主播名后，回写 URL_config
-                        if not url_data[-1] and not run_once:
-                            runtime.need_update_line_list.append(
-                                f"{record_url}|{record_url},主播: {anchor_name.strip()}"
-                            )
-                            run_once = True
+                        if anchor_name != configured_anchor_name:
+                            with runtime.state_lock:
+                                runtime.pending_name_updates[record_url] = anchor_name
+                            configured_anchor_name = anchor_name
+                        with runtime.state_lock:
+                            runtime.current_anchor_names[record_url] = anchor_name
 
                         if port_info["is_live"]:
+                            if live_session_started_at is None:
+                                live_session_started_at = datetime.datetime.now().astimezone()
+                            with runtime.state_lock:
+                                runtime.live_urls.add(record_url)
+
                             flv_url = port_info.get("flv_url")
                             codec = utils.get_query_params(flv_url, "codec") if flv_url else None
                             is_h265 = bool(codec and codec[0] == "h265")
@@ -608,12 +648,60 @@ def start_record(
                                 )
                                 if should_return == "stop":
                                     return
-                                if should_return == "finished":
-                                    next_wait_seconds = 30
-                                elif should_return == "corrupt_restart":
-                                    next_wait_seconds = max(1, settings.corrupt_restart_delay)
+                                record_ended_at = datetime.datetime.now()
+                                recorded_seconds = (record_ended_at - start_record_time).total_seconds()
+                                if recorded_seconds >= max(1, settings.stable_record_reset_seconds):
+                                    disconnect_streak = 0
+                                    corrupt_restart_streak = 0
+                                if should_return == "finished" or (
+                                    should_return == "ended" and recorded_seconds >= 60
+                                ):
+                                    # 非零退出但已持续录制至少一分钟时，仍视为一段
+                                    # 有效直播；几秒内失败的拉流不会污染历史。
+                                    last_successful_record_end = record_ended_at.astimezone()
+                                if should_return == "corrupt_restart":
+                                    next_wait_seconds = _corrupt_retry_delay(
+                                        settings.corrupt_restart_delay,
+                                        corrupt_restart_streak,
+                                    )
+                                    corrupt_restart_streak += 1
+                                    logger.warning(
+                                        f"[{record_name}] 连续花屏重录第 {corrupt_restart_streak} 次，"
+                                        f"{next_wait_seconds} 秒后刷新流地址"
+                                    )
+                                else:
+                                    corrupt_restart_streak = 0
+                                    next_wait_seconds = _retry_delay(
+                                        settings.fast_reconnect_delay,
+                                        disconnect_streak,
+                                        settings.reconnect_backoff_max,
+                                    )
+                                    disconnect_streak += 1
+                                    logger.info(
+                                        f"[{record_name}] 断流重连第 {disconnect_streak} 次，"
+                                        f"{next_wait_seconds} 秒后确认直播状态并刷新流地址"
+                                    )
+                            else:
+                                poll_error_streak += 1
+                        else:
+                            with runtime.state_lock:
+                                runtime.live_urls.discard(record_url)
+                            # ffmpeg 结束后再由直播状态接口确认一次下播，避免短流
+                            # 重连期间反复刷新“上次直播”的结束时间。
+                            if live_session_started_at and last_successful_record_end:
+                                live_history.record_completed(
+                                    record_url,
+                                    anchor_name,
+                                    live_session_started_at,
+                                    last_successful_record_end,
+                                )
+                            live_session_started_at = None
+                            last_successful_record_end = None
+                            disconnect_streak = 0
+                            corrupt_restart_streak = 0
 
                 except Exception as e:
+                    poll_error_streak += 1
                     logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
                     with runtime.max_request_lock:
                         runtime.error_count += 1
@@ -621,12 +709,22 @@ def start_record(
 
                 # ---- 等待下一轮 ------------------------------------------------
                 wait_seconds = max(0, random.randint(-5, 5) + settings.delay_default)
-                if runtime.error_count > 20:
-                    wait_seconds += 60
-                    logger.warning("瞬时错误过多，本轮延迟额外 +60 秒")
+                if poll_error_streak:
+                    wait_seconds = _retry_delay(
+                        settings.delay_default,
+                        poll_error_streak - 1,
+                        settings.fetch_backoff_max,
+                    )
+                    logger.warning(
+                        f"[{worker_name}] 连续获取失败第 {poll_error_streak} 次，"
+                        f"{wait_seconds} 秒后重试"
+                    )
                 if next_wait_seconds is not None:
                     wait_seconds = next_wait_seconds
                     next_wait_seconds = None
+                if runtime.error_count > 20:
+                    wait_seconds += 60
+                    logger.warning("瞬时错误过多，本轮延迟额外 +60 秒")
                 if _sleep_or_stop(worker_name, record_url, wait_seconds):
                     return
         except Exception as e:
