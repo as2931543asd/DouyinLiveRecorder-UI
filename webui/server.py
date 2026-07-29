@@ -16,6 +16,7 @@ import shutil
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import psutil
 import uvicorn
@@ -87,6 +88,60 @@ class StreamerAction(BaseModel):
     url: str
 
 
+def _normalize_streamer_url(url: str) -> str:
+    """生成用于配置项比对的 URL 键，不使用容易误命中的子串判断。"""
+    value = url.strip()
+    if not value:
+        return ""
+    if "://" not in value:
+        value = "https://" + value
+
+    parsed = urlsplit(value)
+    if not parsed.netloc:
+        return ""
+
+    path = parsed.path.rstrip("/")
+    return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), path, "", ""))
+
+
+def _parse_streamer_line(line: str) -> tuple[bool, str, str, str] | None:
+    """解析一行主播配置，返回 (是否暂停, 画质, URL, 名称)。"""
+    stripped = line.strip()
+    if len(stripped) < 18:
+        return None
+
+    paused = stripped.startswith("#")
+    if paused:
+        stripped = stripped.lstrip("#").strip()
+
+    parts = re.split("[,，]", stripped)
+    if len(parts) < 2:
+        return None
+
+    if re.search(r"https?://", parts[0]):
+        quality = "原画"
+        url = parts[0]
+        name = parts[1] if len(parts) > 1 else ""
+    else:
+        quality = parts[0]
+        url = parts[1] if len(parts) > 1 else ""
+        name = parts[2] if len(parts) > 2 else ""
+
+    url = url.strip()
+    if not _normalize_streamer_url(url):
+        return None
+    return paused, quality, url, name
+
+
+def _toggle_line_comment(line: str, currently_paused: bool) -> str:
+    """切换配置行开头的注释符，同时保留原有缩进与换行。"""
+    content = line.lstrip()
+    leading = line[:len(line) - len(content)]
+    if currently_paused:
+        return leading + content.lstrip("#")
+    return leading + "#" + content
+
+
 # ---------- Pages -----------------------------------------------------------
 
 @app.get("/")
@@ -152,8 +207,9 @@ async def add_streamer(data: StreamerAdd):
     if url_host == "live.douyin.com":
         url = url.split("?")[0]
 
+    normalized_url = _normalize_streamer_url(url)
     for s in _parse_url_config():
-        if s["url"] == url:
+        if _normalize_streamer_url(s["url"]) == normalized_url:
             return {"ok": False, "error": "该链接已存在"}
 
     line = f"{data.quality},{url}"
@@ -171,14 +227,20 @@ async def add_streamer(data: StreamerAdd):
 
 @app.delete("/api/streamers")
 async def delete_streamer(data: StreamerAction):
-    _delete_url_line(data.url.strip())
+    if not _delete_url_line(data.url.strip()):
+        return {"ok": False, "error": "未找到完全匹配的主播链接"}
     return {"ok": True}
 
 
 @app.patch("/api/streamers/toggle")
 async def toggle_streamer(data: StreamerAction):
     url = data.url.strip()
+    target_url = _normalize_streamer_url(url)
+    if not target_url:
+        return {"ok": False, "error": "主播链接无效"}
+
     paused_after_toggle = False
+    matched_url = ""
     with runtime.file_update_lock:
         with open(_url_config_file, "r", encoding=text_encoding, errors="ignore") as f:
             lines = f.readlines()
@@ -186,13 +248,18 @@ async def toggle_streamer(data: StreamerAction):
         new_lines: list[str] = []
         toggled = False
         for line in lines:
-            stripped = line.strip()
-            if not toggled and url in stripped:
-                if stripped.startswith("#"):
-                    new_lines.append(line.lstrip("#"))
+            parsed = _parse_streamer_line(line)
+            is_exact_match = (
+                parsed is not None
+                and _normalize_streamer_url(parsed[2]) == target_url
+            )
+            if not toggled and is_exact_match:
+                paused, _, matched_url, _ = parsed
+                if paused:
+                    new_lines.append(_toggle_line_comment(line, currently_paused=True))
                     paused_after_toggle = False
                 else:
-                    new_lines.append("#" + line)
+                    new_lines.append(_toggle_line_comment(line, currently_paused=False))
                     paused_after_toggle = True
                 toggled = True
             else:
@@ -201,11 +268,13 @@ async def toggle_streamer(data: StreamerAction):
         with open(_url_config_file, "w", encoding=text_encoding) as f:
             f.writelines(new_lines)
 
-    if toggled:
-        if paused_after_toggle:
-            _request_stop_url(url)
-        else:
-            _clear_stop_url(url)
+    if not toggled:
+        return {"ok": False, "error": "未找到完全匹配的主播链接"}
+
+    if paused_after_toggle:
+        _request_stop_url(matched_url)
+    else:
+        _clear_stop_url(matched_url)
 
     return {"ok": True}
 
@@ -228,26 +297,11 @@ def _parse_url_config() -> list[dict]:
     try:
         with open(_url_config_file, "r", encoding=text_encoding, errors="ignore") as f:
             for line in f:
-                stripped = line.strip()
-                if len(stripped) < 18:
+                parsed = _parse_streamer_line(line)
+                if parsed is None:
                     continue
 
-                paused = stripped.startswith("#")
-                if paused:
-                    stripped = stripped.lstrip("#")
-
-                parts = re.split("[,，]", stripped)
-                if len(parts) < 2:
-                    continue
-
-                if re.search(r"https?://", parts[0]):
-                    quality = "原画"
-                    url = parts[0]
-                    name = parts[1] if len(parts) > 1 else ""
-                else:
-                    quality = parts[0]
-                    url = parts[1] if len(parts) > 1 else ""
-                    name = parts[2] if len(parts) > 2 else ""
+                paused, quality, url, name = parsed
 
                 is_recording = url in recording_url_snapshot
                 is_monitoring = url in running_snapshot and not paused
@@ -293,20 +347,43 @@ def _parse_url_config() -> list[dict]:
     return streamers
 
 
-def _delete_url_line(url: str) -> None:
+def _delete_url_line(url: str) -> bool:
+    target_url = _normalize_streamer_url(url)
+    if not target_url:
+        return False
+
+    matched_url = ""
     with runtime.file_update_lock:
         with open(_url_config_file, "r", encoding=text_encoding, errors="ignore") as f:
             lines = f.readlines()
+
+        kept_lines: list[str] = []
+        for line in lines:
+            parsed = _parse_streamer_line(line)
+            is_exact_match = (
+                parsed is not None
+                and _normalize_streamer_url(parsed[2]) == target_url
+            )
+            if is_exact_match:
+                matched_url = parsed[2]
+            else:
+                kept_lines.append(line)
+
+        if not matched_url:
+            return False
+
         with open(_url_config_file, "w", encoding=text_encoding) as f:
-            for line in lines:
-                if url not in line:
-                    f.write(line)
-    _request_stop_url(url)
-    live_history.remove(url)
+            f.writelines(kept_lines)
+
+    _request_stop_url(matched_url)
+    for candidate in {matched_url, target_url}:
+        live_history.remove(candidate)
     with runtime.state_lock:
-        runtime.current_anchor_names.pop(url, None)
-        runtime.pending_name_updates.pop(url, None)
-        runtime.live_urls.discard(url)
+        for candidate in {matched_url, target_url}:
+            runtime.current_anchor_names.pop(candidate, None)
+            runtime.pending_name_updates.pop(candidate, None)
+            runtime.live_urls.discard(candidate)
+    return True
 
 
 def _url_stop_candidates(url: str) -> set[str]:

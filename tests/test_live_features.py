@@ -136,6 +136,7 @@ class StreamerApiTests(unittest.TestCase):
             runtime.recording.clear()
             runtime.recording_time_list.clear()
             runtime.running_list.clear()
+            runtime.url_comments.clear()
 
     def test_exposes_elapsed_history_and_current_name(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -203,6 +204,87 @@ class StreamerApiTests(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertIn("https://live.douyin.com/789", snapshot)
             self.assertTrue(snapshot["https://live.douyin.com/789"]["is_baseline"])
+
+    def test_toggle_matches_normalized_url_exactly(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_file = Path(directory) / "URL_config.ini"
+            config_file.write_text(
+                "原画,https://live.douyin.com/123,主播: 目标主播\n"
+                "高清,https://live.douyin.com/1234,主播: 相似主播\n",
+                encoding="utf-8-sig",
+            )
+            server.init(str(config_file))
+
+            result = asyncio.run(
+                server.toggle_streamer(
+                    server.StreamerAction(
+                        url="live.douyin.com/123/?from=dashboard",
+                    )
+                )
+            )
+
+            content = config_file.read_text(encoding="utf-8-sig")
+            self.assertTrue(result["ok"])
+            self.assertIn("#原画,https://live.douyin.com/123,主播: 目标主播\n", content)
+            self.assertIn("高清,https://live.douyin.com/1234,主播: 相似主播\n", content)
+            self.assertNotIn("#高清,https://live.douyin.com/1234", content)
+
+    def test_delete_matches_normalized_url_exactly(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_file = Path(directory) / "URL_config.ini"
+            history_file = Path(directory) / "live_history.json"
+            target_url = "https://live.douyin.com/456"
+            similar_url = "https://live.douyin.com/4567"
+            config_file.write_text(
+                f"原画,{target_url},主播: 目标主播\n"
+                f"原画,{similar_url},主播: 相似主播\n",
+                encoding="utf-8-sig",
+            )
+            live_history.init(history_file)
+            live_history.initialize_missing([target_url, similar_url])
+            server.init(str(config_file))
+
+            result = asyncio.run(
+                server.delete_streamer(
+                    server.StreamerAction(url=f"{target_url}/?from=dashboard")
+                )
+            )
+
+            content = config_file.read_text(encoding="utf-8-sig")
+            history = live_history.get_snapshot()
+            self.assertTrue(result["ok"])
+            self.assertNotIn(f",{target_url},", content)
+            self.assertIn(f"原画,{similar_url},主播: 相似主播\n", content)
+            self.assertNotIn(target_url, history)
+            self.assertIn(similar_url, history)
+
+    def test_toggle_and_delete_report_missing_exact_url(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_file = Path(directory) / "URL_config.ini"
+            config_file.write_text(
+                "原画,https://live.douyin.com/890,主播: 主播\n",
+                encoding="utf-8-sig",
+            )
+            live_history.init(Path(directory) / "live_history.json")
+            server.init(str(config_file))
+
+            toggle_result = asyncio.run(
+                server.toggle_streamer(
+                    server.StreamerAction(url="https://live.douyin.com/89")
+                )
+            )
+            delete_result = asyncio.run(
+                server.delete_streamer(
+                    server.StreamerAction(url="https://live.douyin.com/89")
+                )
+            )
+
+            self.assertFalse(toggle_result["ok"])
+            self.assertFalse(delete_result["ok"])
+            self.assertIn(
+                "原画,https://live.douyin.com/890,主播: 主播\n",
+                config_file.read_text(encoding="utf-8-sig"),
+            )
 
 
 if __name__ == "__main__":
