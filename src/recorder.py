@@ -24,6 +24,7 @@ RecordResult = Literal["stop", "corrupt_restart", "ended", "finished"]
 
 from . import live_history, runtime, spider, stream, utils
 from .config_loader import Settings
+from .danmaku import DanmakuRecorder, danmaku_xml_path, extract_room_identifier
 from .logger import logger
 
 # 文件名里不允许出现的字符
@@ -430,6 +431,7 @@ def _record_once(
     record_name: str,
     record_url: str,
     settings: Settings,
+    danmaku_room_identifier: str | None = None,
 ) -> RecordResult:
     """执行一次录制（一场直播一个文件）。
 
@@ -439,7 +441,8 @@ def _record_once(
         ended: ffmpeg 非 0 退出（下播/断流/源失效等），按默认节奏重试
         finished: 当前直播正常结束
     """
-    now = datetime.datetime.today().strftime("%Y-%m-%d_%H-%M-%S")
+    recording_started_at = datetime.datetime.now()
+    now = recording_started_at.strftime("%Y-%m-%d_%H-%M-%S")
     title_in_name = ""
     if live_title and settings.filename_by_title:
         title_in_name = live_title + "_"
@@ -461,9 +464,30 @@ def _record_once(
         # 旁路解码：不落盘，仅触发视频解码以便捕获 NAL/解码层错误日志
         ffmpeg_command.extend(["-map", "0:v", "-an", "-f", "null", "-"])
 
-    result = _check_subprocess(
-        record_name, record_url, ffmpeg_command, record_save_type, save_file_path, settings
-    )
+    danmaku_recorder: DanmakuRecorder | None = None
+    if getattr(settings, "record_danmaku", False) and danmaku_room_identifier:
+        try:
+            danmaku_recorder = DanmakuRecorder(
+                room_identifier=danmaku_room_identifier,
+                service_url=getattr(
+                    settings, "danmaku_service_url", "ws://127.0.0.1:1088"
+                ),
+                xml_path=danmaku_xml_path(save_file_path),
+                started_at=recording_started_at.timestamp(),
+            )
+            danmaku_recorder.start()
+        except Exception as e:
+            # 弹幕只是伴随功能，初始化问题不应阻止 FFmpeg 启动。
+            logger.error(f"弹幕录制启动失败，视频录制继续: {e}")
+            danmaku_recorder = None
+
+    try:
+        result = _check_subprocess(
+            record_name, record_url, ffmpeg_command, record_save_type, save_file_path, settings
+        )
+    finally:
+        if danmaku_recorder is not None:
+            danmaku_recorder.stop()
 
     if result == "stop":
         if record_save_type == "TS":
@@ -635,6 +659,16 @@ def start_record(
                                     logger.info(f"{platform} | {anchor_name} | 直播源地址: {real_url}")
 
                                 record_save_type = "TS" if is_h265 else settings.video_save_type
+                                danmaku_room_identifier = None
+                                if settings.record_danmaku:
+                                    danmaku_room_identifier = extract_room_identifier(
+                                        json_data, record_url
+                                    )
+                                    if not danmaku_room_identifier:
+                                        logger.warning(
+                                            f"[{record_name}] 无法从直播 API 或 live.douyin.com "
+                                            "路径确定弹幕直播间标识，本轮跳过弹幕，视频录制继续"
+                                        )
 
                                 should_return = _record_once(
                                     real_url=real_url,
@@ -645,6 +679,7 @@ def start_record(
                                     record_name=record_name,
                                     record_url=record_url,
                                     settings=settings,
+                                    danmaku_room_identifier=danmaku_room_identifier,
                                 )
                                 if should_return == "stop":
                                     return

@@ -53,6 +53,10 @@ class Settings:
         self.folder_by_title = self._bool(g("录制设置", "保存文件夹是否以标题区分", "否"), False)
         self.filename_by_title = self._bool(g("录制设置", "保存文件名是否包含标题", "否"), False)
         self.clean_emoji = self._bool(g("录制设置", "是否去除名称中的表情符号", "是"), True)
+        self.record_danmaku = self._bool(g("录制设置", "是否录制弹幕", "否"), False)
+        self.danmaku_service_url = str(
+            g("录制设置", "弹幕服务地址", "ws://127.0.0.1:1088")
+        ).strip() or "ws://127.0.0.1:1088"
 
         raw_save_type = g("录制设置", "视频保存格式ts|mkv|flv|mp4", "ts")
         self.video_save_type = (

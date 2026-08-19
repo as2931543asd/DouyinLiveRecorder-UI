@@ -15,6 +15,7 @@
 - 持久记录每位主播上次直播结束时间，并在列表中显示距今时长；
 - 自动跟随抖音最新主播昵称，同步监控列表、录制目录和文件名；
 - 基于 FFmpeg 录制直播流，输出稳定，可配合现有存储目录使用；
+- 可选同步录制普通聊天弹幕，输出 Bilibili 兼容 XML；
 - 支持根据 FFmpeg 坏流日志自动判定疑似花屏并快速重录，减少长时间写入损坏 TS 的情况；
 - 支持通过 `config.ini` 和 `URL_config.ini` 调整录制与轮询策略；
 - 适合通过 `systemd` 长期托管运行。
@@ -64,6 +65,7 @@
     │   ├── config_loader.py -> (config.ini 读取与热重载)
     │   ├── url_config.py -> (URL_config.ini 解析与 worker 调度)
     │   ├── recorder.py -> (单直播间录制 worker，封装 ffmpeg 子进程)
+    │   ├── danmaku.py -> (本地伴随服务客户端与 Bilibili XML 弹幕写入)
     │   ├── monitor.py -> (根据错误率动态调整 max_request)
     │   ├── file_ops.py -> (URL_config 行级改写 + 配置备份)
     │   ├── spider.py -> (抖音 Web/App 端直播数据抓取)
@@ -94,6 +96,25 @@ https://v.douyin.com/CeiU5cbX  (主播主页地址)
 可通过 WebUI 或在 `config/URL_config.ini` 中手动添加直播间地址，一行一个。
 
 如需自定义配置，可修改 `config/config.ini` 文件。
+
+### 弹幕录制（可选）
+
+弹幕功能依赖 MIT 许可的 [jwwsjlm/douyinLive](https://github.com/jwwsjlm/douyinLive) 伴随服务。建议只把服务端口发布到本机回环地址，并固定使用已验证镜像版本：
+
+```bash
+docker run -d --name douyinlive-danmaku --restart unless-stopped \
+  -p 127.0.0.1:1088:1088 \
+  ghcr.io/jwwsjlm/douyinlive:v2.1.0
+```
+
+然后在 `config/config.ini` 的 `[录制设置]` 中开启：
+
+```ini
+是否录制弹幕 = 是
+弹幕服务地址 = ws://127.0.0.1:1088
+```
+
+每轮视频录制会在视频同目录生成同一时间戳基名的 `.xml` 文件；分段视频的多个文件共用本轮单个 XML。XML 只记录 `WebcastChatMessage` 普通弹幕，可由兼容 Bilibili XML 的播放器或工具读取。伴随服务未启动、断线或消息解析失败时会记录日志并有限退避重连，不会中断或拖慢视频录制。
 
 如果你遇到 TS 录制过程中偶发花屏，可关注下面几个配置项：
 

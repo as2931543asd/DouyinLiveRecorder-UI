@@ -22,6 +22,7 @@ import time
 from ffmpeg_install import check_ffmpeg, current_env_path, ffmpeg_path
 from src import live_history, runtime, url_config, utils
 from src.config_loader import Settings
+from src.danmaku import stop_all_active_recorders
 from src.file_ops import backup_file_loop
 from src.logger import logger
 from src.monitor import adjust_max_request_loop
@@ -41,9 +42,18 @@ os.environ["PATH"] = ffmpeg_path + os.pathsep + current_env_path
 
 
 def _signal_handler(_signum, _frame):
-    sys.exit(0)
+    # 不在信号处理器里获取 runtime.state_lock：信号可能恰好中断持锁的主线程。
+    # 先让所有录制 worker 停止/拒绝新工作，再闭合仍登记中的弹幕 XML。
+    runtime.exit_recording = True
+    try:
+        stop_all_active_recorders()
+    except Exception as exc:
+        logger.error(f"进程关闭时停止弹幕录制失败，继续退出: {exc}")
+    finally:
+        sys.exit(0)
 
 
+signal.signal(signal.SIGINT, _signal_handler)
 signal.signal(signal.SIGTERM, _signal_handler)
 
 
