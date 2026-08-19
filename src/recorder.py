@@ -18,13 +18,15 @@ import subprocess
 import threading
 import time
 from collections import deque
-from typing import Literal, TextIO
+from pathlib import Path
+from typing import Callable, Literal, TextIO
 
 RecordResult = Literal["stop", "corrupt_restart", "ended", "finished"]
+SubprocessStartedCallback = Callable[[float, float], None]
 
 from . import live_history, runtime, spider, stream, utils
 from .config_loader import Settings
-from .danmaku import DanmakuRecorder, danmaku_xml_path, extract_room_identifier
+from .danmaku import DanmakuRecorder, danmaku_jsonl_path, extract_room_identifier
 from .logger import logger
 
 # 文件名里不允许出现的字符
@@ -269,6 +271,7 @@ def _check_subprocess(
     save_type: str,
     save_file_path: str,
     settings: Settings,
+    on_started: SubprocessStartedCallback | None = None,
 ) -> RecordResult:
     """启动 ffmpeg 并阻塞监视。
 
@@ -289,9 +292,16 @@ def _check_subprocess(
         bufsize=1,
         startupinfo=_startup_info(),
     )
+    started_at = time.time()
+    started_monotonic = time.monotonic()
     output_queue: queue.Queue[str] = queue.Queue()
     reader = threading.Thread(target=_stream_reader, args=(process.stdout, output_queue), daemon=True)
     reader.start()
+    if on_started is not None:
+        try:
+            on_started(started_at, started_monotonic)
+        except Exception as exc:
+            logger.error(f"FFmpeg 启动回调失败，视频录制继续: {exc}")
     corrupt_window: deque[float] = deque()
     recent_lines: deque[str] = deque(maxlen=30)
     forced_restart = False
@@ -348,6 +358,23 @@ def _check_subprocess(
         runtime.recording.discard(record_name)
         runtime.recording_time_list.pop(record_name, None)
     return result
+
+
+def _run_danmaku_bootstrap(recorder: DanmakuRecorder) -> None:
+    """在独立线程启动弹幕，隔离慢文件初始化和意外异常。"""
+    try:
+        recorder.start()
+    except Exception as exc:
+        logger.error(f"弹幕录制启动失败，视频录制继续: {exc}")
+
+
+def _spawn_danmaku_bootstrap(recorder: DanmakuRecorder) -> None:
+    threading.Thread(
+        target=_run_danmaku_bootstrap,
+        args=(recorder,),
+        name=f"danmaku-bootstrap-{recorder.room_identifier}",
+        daemon=True,
+    ).start()
 
 
 # ---------- ffmpeg 组装 ------------------------------------------------------
@@ -441,8 +468,8 @@ def _record_once(
         ended: ffmpeg 非 0 退出（下播/断流/源失效等），按默认节奏重试
         finished: 当前直播正常结束
     """
-    recording_started_at = datetime.datetime.now()
-    now = recording_started_at.strftime("%Y-%m-%d_%H-%M-%S")
+    filename_started_at = datetime.datetime.now()
+    now = filename_started_at.strftime("%Y-%m-%d_%H-%M-%S")
     title_in_name = ""
     if live_title and settings.filename_by_title:
         title_in_name = live_title + "_"
@@ -465,29 +492,47 @@ def _record_once(
         ffmpeg_command.extend(["-map", "0:v", "-an", "-f", "null", "-"])
 
     danmaku_recorder: DanmakuRecorder | None = None
+    danmaku_parameters: tuple[str, str, Path] | None = None
     if getattr(settings, "record_danmaku", False) and danmaku_room_identifier:
-        try:
-            danmaku_recorder = DanmakuRecorder(
-                room_identifier=danmaku_room_identifier,
-                service_url=getattr(
-                    settings, "danmaku_service_url", "ws://127.0.0.1:1088"
-                ),
-                xml_path=danmaku_xml_path(save_file_path),
-                started_at=recording_started_at.timestamp(),
-            )
-            danmaku_recorder.start()
-        except Exception as e:
-            # 弹幕只是伴随功能，初始化问题不应阻止 FFmpeg 启动。
-            logger.error(f"弹幕录制启动失败，视频录制继续: {e}")
-            danmaku_recorder = None
+        danmaku_parameters = (
+            danmaku_room_identifier,
+            getattr(settings, "danmaku_service_url", "ws://127.0.0.1:1088"),
+            danmaku_jsonl_path(save_file_path),
+        )
+
+    def start_danmaku(started_at: float, started_monotonic: float) -> None:
+        nonlocal danmaku_recorder
+        if danmaku_parameters is None:
+            return
+        room_identifier, service_url, jsonl_path = danmaku_parameters
+        recorder = DanmakuRecorder(
+            room_identifier=room_identifier,
+            service_url=service_url,
+            jsonl_path=jsonl_path,
+            started_at=started_at,
+            started_monotonic=started_monotonic,
+        )
+        # 先同步发布实例，确保极短 FFmpeg 退出时 finally 能先置 stop；真正可能
+        # 被 mkdir/open/flush 阻塞的 start 始终放在独立 daemon bootstrap 中。
+        danmaku_recorder = recorder
+        _spawn_danmaku_bootstrap(recorder)
 
     try:
         result = _check_subprocess(
-            record_name, record_url, ffmpeg_command, record_save_type, save_file_path, settings
+            record_name,
+            record_url,
+            ffmpeg_command,
+            record_save_type,
+            save_file_path,
+            settings,
+            on_started=start_danmaku if danmaku_parameters is not None else None,
         )
     finally:
         if danmaku_recorder is not None:
-            danmaku_recorder.stop()
+            try:
+                danmaku_recorder.stop()
+            except Exception as e:
+                logger.error(f"弹幕录制停止失败，视频录制结果不受影响: {e}")
 
     if result == "stop":
         if record_save_type == "TS":

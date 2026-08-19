@@ -15,7 +15,7 @@
 - 持久记录每位主播上次直播结束时间，并在列表中显示距今时长；
 - 自动跟随抖音最新主播昵称，同步监控列表、录制目录和文件名；
 - 基于 FFmpeg 录制直播流，输出稳定，可配合现有存储目录使用；
-- 可选同步录制普通聊天弹幕，输出 Bilibili 兼容 XML；
+- 可选同步录制普通聊天弹幕，输出可逐行解析的结构化 JSON Lines；
 - 支持根据 FFmpeg 坏流日志自动判定疑似花屏并快速重录，减少长时间写入损坏 TS 的情况；
 - 支持通过 `config.ini` 和 `URL_config.ini` 调整录制与轮询策略；
 - 适合通过 `systemd` 长期托管运行。
@@ -65,7 +65,7 @@
     │   ├── config_loader.py -> (config.ini 读取与热重载)
     │   ├── url_config.py -> (URL_config.ini 解析与 worker 调度)
     │   ├── recorder.py -> (单直播间录制 worker，封装 ffmpeg 子进程)
-    │   ├── danmaku.py -> (本地伴随服务客户端与 Bilibili XML 弹幕写入)
+    │   ├── danmaku.py -> (本地伴随服务客户端与结构化 JSONL 弹幕写入)
     │   ├── monitor.py -> (根据错误率动态调整 max_request)
     │   ├── file_ops.py -> (URL_config 行级改写 + 配置备份)
     │   ├── spider.py -> (抖音 Web/App 端直播数据抓取)
@@ -74,6 +74,8 @@
     │   ├── ab_sign.py -> (a_bogus 签名: SM3 + RC4)
     │   ├── http_clients/ -> (httpx 异步封装)
     │   ├── utils.py / logger.py
+    ├── /scripts
+    │   └── danmaku_convert.py -> (JSONL 离线转换为 Bilibili XML)
     ├── /webui
     │   ├── server.py -> (FastAPI 后端，默认监听 0.0.0.0:9527)
     │   ├── /static
@@ -114,7 +116,83 @@ docker run -d --name douyinlive-danmaku --restart unless-stopped \
 弹幕服务地址 = ws://127.0.0.1:1088
 ```
 
-每轮视频录制会在视频同目录生成同一时间戳基名的 `.xml` 文件；分段视频的多个文件共用本轮单个 XML。XML 只记录 `WebcastChatMessage` 普通弹幕，可由兼容 Bilibili XML 的播放器或工具读取。伴随服务未启动、断线或消息解析失败时会记录日志并有限退避重连，不会中断或拖慢视频录制。
+每轮 FFmpeg 录制会在视频同目录生成同一时间戳基名的
+`.danmaku.jsonl` 文件。普通视频会先去掉视频扩展名，例如
+`name.flv -> name.danmaku.jsonl`；分段模板会同时去掉 `_%03d`，例如
+`name_%03d.ts -> name.danmaku.jsonl`，因此同一轮的所有视频分段只共用一个
+JSONL。运行时只生成 JSONL，不再同时生成 XML。
+
+JSONL 是弹幕的来源事实文件，应长期保留。它不需要文件尾闭合：运行时 writer
+产生的文件物理首行总是 `metadata`，后续每行是独立的 `chat` 紧凑 JSON，均使用
+UTF-8 且保留非 ASCII 文字。每写一行都会及时刷新，因此异常退出时，除最多最后半行外，之前的行仍可
+独立解析。伴随服务未启动、断线或消息解析失败时会记录日志并有限退避重连，不会
+中断或拖慢视频录制。创建文件使用排他模式；若同名来源文件已经存在，程序只记录
+弹幕启动失败并继续视频录制，绝不会截断原文件。
+
+#### JSONL schema v1
+
+稳定 schema 名为 `douyin-live-recorder-ui.danmaku`，当前 `version` 为 `1`。
+必需字段如下：
+
+- `metadata`：`type`、`schema`、`version`、`platform`、`room_identifier`、
+  `recording_started_at_unix_ms`、`time_units`；
+- `chat`：`type`、`sequence`、`method`、`offset_ms`、
+  `received_at_unix_ms`、`user.id`、`user.nickname`、`content`。
+
+`recording_started_at_unix_ms` 是 FFmpeg 子进程成功启动时采集的 UTC Unix epoch
+毫秒；同一次 `Popen` 成功后会成对采集单调时钟原点，后续 `offset_ms` 是相对这个
+原点的非负毫秒，不受 NTP 或人工校时前后跳影响。`received_at_unix_ms` 是收到消息时
+系统 Unix wall clock 的 UTC Unix epoch 毫秒。因此 schema 不要求
+`received_at_unix_ms - recording_started_at_unix_ms == offset_ms`。所有毫秒值均
+向下取整，`sequence` 从 1 严格递增。普通聊天固定为
+`method=WebcastChatMessage`。昵称与正文分别保存在 `user.nickname` 和
+`content`，不会在来源文件中合并；缺失的用户 ID 或昵称保存为 JSON `null`，
+不会在来源文件中伪造为 `0` 或“匿名用户”。缺少 `content` 的聊天会跳过，但明确
+存在的空字符串会保留。
+
+示例（实际文件中每个对象各占一行）：
+
+```jsonl
+{"type":"metadata","schema":"douyin-live-recorder-ui.danmaku","version":1,"platform":"douyin","room_identifier":"123456","recording_started_at_unix_ms":1787104800123,"time_units":{"recording_started_at_unix_ms":"milliseconds since Unix epoch UTC","received_at_unix_ms":"milliseconds since Unix epoch UTC","offset_ms":"milliseconds from recording start"}}
+{"type":"chat","sequence":1,"method":"WebcastChatMessage","offset_ms":2345,"received_at_unix_ms":1787104802468,"user":{"id":"987654","nickname":"示例用户"},"content":"你好"}
+```
+
+#### 离线生成 Bilibili XML
+
+需要兼容 Bilibili XML 的播放器或工具时，可从 JSONL 离线派生：
+
+```bash
+python scripts/danmaku_convert.py /path/to/name.danmaku.jsonl
+```
+
+默认输出同基名 `/path/to/name.xml`。目标已存在时默认拒绝覆盖；确认要替换时：
+
+```bash
+python scripts/danmaku_convert.py /path/to/name.danmaku.jsonl --overwrite
+```
+
+也可用 `--output /path/to/custom.xml` 指定目标。输入与输出不能是同一个文件；即使
+使用 `--overwrite`，转换器也会拒绝直接同路径以及已有符号链接/硬链接别名，避免
+来源 JSONL 被 XML 替换。转换器会把 XML 弹幕文本组合为 `nickname: content`；
+当来源用户字段为 `null` 时，仅在 XML 显示层使用 `0`、`匿名用户`，并使用转换器
+本地的 `mode=1`、`font_size=25`、`color=16777215` 兼容默认值。这些值不会写回
+来源 JSONL。
+
+转换默认是严格模式：任何非法或截断的 JSON 行都会报告具体行号、以非零状态退出，
+且不会覆盖已有目标。为容许人工编辑和恢复，转换器会跳过空白行，所以它验证的是
+第一条非空记录为 `metadata`，并不改变运行时 writer 的物理首行保证。schema v1
+上面列出的字段都必须存在；转换器同时容许未知扩展字段，以便未来加入
+`message_id` 等字段。这种宽容不代表运行时会伪造尚未采集的数据。若确认文件仅因
+异常退出留下了没有换行的不完整最后一行，可显式恢复之前的完整记录：
+
+```bash
+python scripts/danmaku_convert.py /path/to/name.danmaku.jsonl --recover-truncated-tail
+```
+
+恢复模式会向 stderr 明确报警，并且只忽略“文件最后一行、没有换行、JSON 确属
+不完整”这三项同时满足的尾部；中间坏行、带换行的坏尾行和普通非法 JSON 仍会失败。
+转换全程先写临时文件，校验成功后再原子发布。XML 和未来的 ASS 都是可从 JSONL
+再生成的派生文件，不应替代原始 `.danmaku.jsonl`。
 
 如果你遇到 TS 录制过程中偶发花屏，可关注下面几个配置项：
 

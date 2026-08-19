@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import json
 import signal
 import sys
 import tempfile
 import threading
 import unittest
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import Mock, call, patch
 
@@ -37,11 +37,11 @@ class ProcessDanmakuShutdownTests(unittest.TestCase):
         self._shutdown_patch.stop()
 
     @staticmethod
-    def _make_idle_recorder(xml_path: Path, room: str) -> DanmakuRecorder:
+    def _make_idle_recorder(jsonl_path: Path, room: str) -> DanmakuRecorder:
         recorder = DanmakuRecorder(
             room_identifier=room,
             service_url="ws://127.0.0.1:1088",
-            xml_path=xml_path,
+            jsonl_path=jsonl_path,
             started_at=1000.0,
         )
         recorder._thread_main = lambda: recorder._stop_event.wait(2)  # type: ignore[method-assign]
@@ -49,7 +49,10 @@ class ProcessDanmakuShutdownTests(unittest.TestCase):
 
     def test_process_shutdown_closes_two_active_recorders(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            paths = [Path(directory) / "one.xml", Path(directory) / "two.xml"]
+            paths = [
+                Path(directory) / "one.danmaku.jsonl",
+                Path(directory) / "two.danmaku.jsonl",
+            ]
             recorders = [
                 self._make_idle_recorder(paths[0], "one"),
                 self._make_idle_recorder(paths[1], "two"),
@@ -84,9 +87,7 @@ class ProcessDanmakuShutdownTests(unittest.TestCase):
                 )
 
             self.assertTrue(all(recorder._thread for recorder in recorders))
-            self.assertTrue(
-                all(not path.read_text(encoding="utf-8").endswith("</i>\n") for path in paths)
-            )
+            self.assertTrue(all(recorder.writer._file is not None for recorder in recorders))
 
             before_shutdown = danmaku_module.time.monotonic()
             stop_all_active_recorders(timeout=1)
@@ -100,16 +101,17 @@ class ProcessDanmakuShutdownTests(unittest.TestCase):
             self.assertTrue(
                 all(not recorder._thread.is_alive() for recorder in recorders if recorder._thread)
             )
-            self.assertTrue(
-                all(path.read_text(encoding="utf-8").endswith("</i>\n") for path in paths)
+            self.assertTrue(all(recorder.writer._file is None for recorder in recorders))
+            self.assertEqual(
+                [json.loads(path.read_text(encoding="utf-8"))["type"] for path in paths],
+                ["metadata", "metadata"],
             )
-            self.assertEqual([ET.parse(path).getroot().tag for path in paths], ["i", "i"])
             with danmaku_module._registry_lock:
                 self.assertFalse(danmaku_module._active_recorders)
 
     def test_slow_open_does_not_block_shutdown_gate_and_rolls_back(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            first_path = Path(directory) / "racing.xml"
+            first_path = Path(directory) / "racing.danmaku.jsonl"
             recorder = self._make_idle_recorder(first_path, "racing")
             writer_open = recorder.writer.open
             open_entered = threading.Event()
@@ -120,7 +122,7 @@ class ProcessDanmakuShutdownTests(unittest.TestCase):
             recorder._thread_main = network_target  # type: ignore[method-assign]
 
             def slow_open() -> None:
-                # 模拟 mkdir/open/header write 持有 writer 锁并长期阻塞。
+                # 模拟 mkdir/open/metadata write 持有 writer 锁并长期阻塞。
                 with recorder.writer._lock:
                     open_entered.set()
                     self.assertTrue(allow_open_to_finish.wait(timeout=2))
@@ -156,7 +158,7 @@ class ProcessDanmakuShutdownTests(unittest.TestCase):
             self.assertTrue(shutdown_returned.wait(timeout=1))
             self.assertTrue(starter.is_alive())
 
-            blocked_path = Path(directory) / "after-shutdown.xml"
+            blocked_path = Path(directory) / "after-shutdown.danmaku.jsonl"
             blocked = self._make_idle_recorder(blocked_path, "blocked")
             blocked.start()
             self.assertIsNone(blocked._thread)
@@ -170,8 +172,11 @@ class ProcessDanmakuShutdownTests(unittest.TestCase):
             self.assertFalse(shutdown_thread.is_alive())
             network_target.assert_not_called()
             self.assertIsNone(recorder._thread)
-            self.assertTrue(first_path.read_text(encoding="utf-8").endswith("</i>\n"))
-            self.assertEqual(ET.parse(first_path).getroot().tag, "i")
+            self.assertIsNone(recorder.writer._file)
+            self.assertEqual(
+                json.loads(first_path.read_text(encoding="utf-8"))["type"],
+                "metadata",
+            )
             with danmaku_module._registry_lock:
                 self.assertFalse(danmaku_module._active_recorders)
 
@@ -181,19 +186,22 @@ class ProcessDanmakuShutdownTests(unittest.TestCase):
             live_lock_held = threading.Event()
             locked_release = threading.Event()
             locked_lock_held = threading.Event()
-            paths = [Path(directory) / "live.xml", Path(directory) / "locked.xml"]
+            paths = [
+                Path(directory) / "live.danmaku.jsonl",
+                Path(directory) / "locked.danmaku.jsonl",
+            ]
 
             live = DanmakuRecorder(
                 "live", "ws://127.0.0.1:1088", paths[0], started_at=1000.0
             )
 
-            def slow_xml_write_then_self_close() -> None:
+            def slow_jsonl_write_then_self_close() -> None:
                 with live.writer._lock:
                     live_lock_held.set()
                     self.assertTrue(live_release.wait(timeout=2))
                 live._close_writer()
 
-            live._thread_main = slow_xml_write_then_self_close  # type: ignore[method-assign]
+            live._thread_main = slow_jsonl_write_then_self_close  # type: ignore[method-assign]
             live.start()
             self.assertTrue(live_lock_held.wait(timeout=2))
 
@@ -243,13 +251,12 @@ class ProcessDanmakuShutdownTests(unittest.TestCase):
                 self.assertEqual(len(wait_deadlines), 2)
                 self.assertEqual(len(set(wait_deadlines)), 1)
                 warnings = "\n".join(str(item) for item in warning.call_args_list)
-                self.assertIn("未强制抢占 XML 写锁", warnings)
-                self.assertIn("XML 写锁未能在关闭期限内取得", warnings)
-                self.assertTrue(
-                    all(
-                        not path.read_text(encoding="utf-8").endswith("</i>\n")
-                        for path in paths
-                    )
+                self.assertIn("未强制抢占 JSONL 写锁", warnings)
+                self.assertIn("JSONL 写锁未能在关闭期限内取得", warnings)
+                self.assertTrue(all(recorder.writer._file is not None for recorder in (live, locked)))
+                self.assertEqual(
+                    [json.loads(path.read_text(encoding="utf-8"))["type"] for path in paths],
+                    ["metadata", "metadata"],
                 )
             finally:
                 live_release.set()
@@ -261,10 +268,11 @@ class ProcessDanmakuShutdownTests(unittest.TestCase):
 
             self.assertFalse(live._thread and live._thread.is_alive())
             self.assertFalse(lock_holder.is_alive())
-            self.assertTrue(
-                all(path.read_text(encoding="utf-8").endswith("</i>\n") for path in paths)
+            self.assertTrue(all(recorder.writer._file is None for recorder in (live, locked)))
+            self.assertEqual(
+                [json.loads(path.read_text(encoding="utf-8"))["type"] for path in paths],
+                ["metadata", "metadata"],
             )
-            self.assertEqual([ET.parse(path).getroot().tag for path in paths], ["i", "i"])
 
 
 class MainSignalHandlerTests(unittest.TestCase):

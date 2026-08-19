@@ -2,26 +2,28 @@
 """抖音直播弹幕伴随录制。
 
 从本地 ``douyinLive`` WebSocket 伴随服务读取 JSON，只把普通聊天消息写成
-Bilibili 兼容 XML。网络、解析和文件错误都被限制在本模块内，不影响视频录制。
+结构化 JSON Lines。网络、解析和文件错误都被限制在本模块内，不影响视频录制。
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import math
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, TextIO
 from urllib.parse import quote, unquote, urlsplit
-from xml.sax.saxutils import escape, quoteattr
 
 import websockets
 
 from .logger import logger
 
 _CHAT_METHOD = "WebcastChatMessage"
+_SCHEMA_NAME = "douyin-live-recorder-ui.danmaku"
+_SCHEMA_VERSION = 1
 _RECONNECT_DELAYS = (1, 2, 5, 10, 15)
 _HEALTHY_CONNECTION_SECONDS = 30.0
 
@@ -32,18 +34,6 @@ _registry_lock = threading.RLock()
 _active_recorders: set["DanmakuRecorder"] = set()
 _shutdown_started = False
 _shutdown_deadline: float | None = None
-
-_XML_HEADER = """<?xml version="1.0" encoding="UTF-8"?>
-<i>
-<chatserver>chat.bilibili.com</chatserver>
-<chatid>0</chatid>
-<mission>0</mission>
-<maxlimit>0</maxlimit>
-<state>0</state>
-<real_name>0</real_name>
-<source>DouyinLiveRecorder-UI</source>
-"""
-_XML_FOOTER = "</i>\n"
 
 
 def _identifier(value: Any) -> str | None:
@@ -91,19 +81,19 @@ def extract_room_identifier(api_data: Mapping[str, Any] | None, record_url: str)
         return None
 
 
-def danmaku_xml_path(video_path: str | Path) -> Path:
-    """返回与视频同基名的 XML；分段模板 ``_%03d`` 不进入 XML 文件名。"""
+def danmaku_jsonl_path(video_path: str | Path) -> Path:
+    """返回与视频同基名的 JSONL；分段模板 ``_%03d`` 不进入文件名。"""
     path = Path(video_path)
     stem = path.stem
     if stem.endswith("_%03d"):
         stem = stem[: -len("_%03d")]
-    return path.with_name(f"{stem}.xml")
+    return path.with_name(f"{stem}.danmaku.jsonl")
 
 
 @dataclass(frozen=True)
 class ChatMessage:
-    nickname: str
-    user_id: str
+    nickname: str | None
+    user_id: str | None
     content: str
 
 
@@ -113,28 +103,26 @@ class _RawMessageResult:
     room_not_found: bool = False
 
 
-def _first_field(mapping: Mapping[str, Any], *names: str, default: str = "") -> str:
+def _optional_text_field(mapping: Mapping[str, Any], *names: str) -> str | None:
     for name in names:
-        value = mapping.get(name)
+        if name not in mapping:
+            continue
+        value = mapping[name]
         if value is not None:
-            return str(value)
-    return default
+            return _utf8_text(str(value))
+    return None
 
 
-def _xml_sanitize(value: str) -> str:
-    """剔除 XML 1.0 不允许的控制字符和代理码位。"""
+def _utf8_text(value: str) -> str:
+    """替换 UTF-8 无法编码的孤立代理码位，保留可由 JSON 转义的控制字符。"""
     return "".join(
-        char
-        for char in value
-        if char in "\t\n\r"
-        or "\x20" <= char <= "\ud7ff"
-        or "\ue000" <= char <= "\ufffd"
-        or "\U00010000" <= char <= "\U0010ffff"
+        "\ufffd" if "\ud800" <= char <= "\udfff" else char for char in value
     )
 
 
-def _xml_escape(value: str) -> str:
-    return escape(_xml_sanitize(value))
+def _unix_ms(timestamp: float) -> int:
+    """把 Unix 秒向下取整为整数毫秒。"""
+    return math.floor(timestamp * 1000)
 
 
 def _business_message(payload: Any) -> Mapping[str, Any] | None:
@@ -172,60 +160,137 @@ def parse_chat_message(payload: Any) -> ChatMessage | None:
     if message.get("method") != _CHAT_METHOD:
         return None
 
-    user = message.get("user")
-    if not isinstance(user, Mapping):
+    raw_user = message.get("user")
+    if raw_user is None:
+        user: Mapping[str, Any] = {}
+    elif isinstance(raw_user, Mapping):
+        user = raw_user
+    else:
         return None
 
-    nickname = _first_field(user, "nickname", "nick_name", "display_id", default="匿名用户")
-    user_id = _first_field(user, "id", "id_str", "sec_uid", "short_id", default="0")
-    content = _first_field(message, "content", "default_content")
+    nickname = _optional_text_field(user, "nickname", "nick_name", "display_id")
+    user_id = _optional_text_field(user, "id", "id_str", "sec_uid", "short_id")
+    content = _optional_text_field(message, "content", "default_content")
+    if content is None:
+        return None
     return ChatMessage(nickname=nickname, user_id=user_id, content=content)
 
 
-class BilibiliXmlWriter:
-    """线程安全的流式 Bilibili XML 写入器。"""
+class DanmakuJsonlWriter:
+    """线程安全、逐行落盘的结构化弹幕 JSONL 写入器。"""
 
-    def __init__(self, path: str | Path, started_at: float) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        room_identifier: str,
+        started_at: float,
+        started_monotonic: float | None = None,
+    ) -> None:
         self.path = Path(path)
-        self.started_at = started_at
+        self.room_identifier = _utf8_text(str(room_identifier))
+        self.started_at_unix_ms = _unix_ms(started_at)
+        self.started_monotonic = (
+            time.monotonic() if started_monotonic is None else started_monotonic
+        )
         self._file: TextIO | None = None
         self._sequence = 0
         self._lock = threading.RLock()
+
+    @staticmethod
+    def _encode_line(record: Mapping[str, Any]) -> str:
+        return json.dumps(
+            record,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ) + "\n"
 
     def open(self) -> None:
         with self._lock:
             if self._file is not None:
                 return
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            xml_file = self.path.open("w", encoding="utf-8", buffering=1)
+            jsonl_file = self.path.open(
+                "x", encoding="utf-8", buffering=1, newline="\n"
+            )
             try:
-                xml_file.write(_XML_HEADER)
+                metadata = {
+                    "type": "metadata",
+                    "schema": _SCHEMA_NAME,
+                    "version": _SCHEMA_VERSION,
+                    "platform": "douyin",
+                    "room_identifier": self.room_identifier,
+                    "recording_started_at_unix_ms": self.started_at_unix_ms,
+                    "time_units": {
+                        "recording_started_at_unix_ms": "milliseconds since Unix epoch UTC",
+                        "received_at_unix_ms": "milliseconds since Unix epoch UTC",
+                        "offset_ms": "milliseconds from recording start",
+                    },
+                }
+                jsonl_file.write(self._encode_line(metadata))
+                jsonl_file.flush()
             except Exception:
-                xml_file.close()
+                jsonl_file.close()
                 raise
-            self._file = xml_file
+            self._file = jsonl_file
 
-    def write(self, message: ChatMessage, received_at: float | None = None) -> None:
-        timestamp = time.time() if received_at is None else received_at
-        relative_seconds = max(0.0, timestamp - self.started_at)
+    def write(
+        self,
+        message: ChatMessage,
+        received_at: float | None = None,
+        received_monotonic: float | None = None,
+    ) -> None:
+        if received_at is None:
+            timestamp = time.time()
+            if received_monotonic is None:
+                received_monotonic = time.monotonic()
+        else:
+            timestamp = received_at
+        received_at_unix_ms = _unix_ms(timestamp)
+        if received_monotonic is None:
+            # 显式 wall-clock 时间保留给确定性测试和离线调用路径。
+            offset_ms = max(0, received_at_unix_ms - self.started_at_unix_ms)
+        else:
+            offset_ms = max(
+                0,
+                math.floor(
+                    (received_monotonic - self.started_monotonic) * 1000
+                ),
+            )
         with self._lock:
             if self._file is None:
-                raise RuntimeError("弹幕 XML 尚未打开或已经关闭")
-            self._sequence += 1
-            p_value = (
-                f"{relative_seconds:.3f},1,25,16777215,{int(timestamp)},0,"
-                f"{message.user_id},{self._sequence}"
-            )
-            text = f"{message.nickname}: {message.content}"
-            self._file.write(
-                f"<d p={quoteattr(_xml_sanitize(p_value))}>{_xml_escape(text)}</d>\n"
-            )
+                raise RuntimeError("弹幕 JSONL 尚未打开或已经关闭")
+            sequence = self._sequence + 1
+            record = {
+                "type": "chat",
+                "sequence": sequence,
+                "method": _CHAT_METHOD,
+                "offset_ms": offset_ms,
+                "received_at_unix_ms": received_at_unix_ms,
+                "user": {
+                    "id": (
+                        None
+                        if message.user_id is None
+                        else _utf8_text(message.user_id)
+                    ),
+                    "nickname": (
+                        None
+                        if message.nickname is None
+                        else _utf8_text(message.nickname)
+                    ),
+                },
+                "content": _utf8_text(message.content),
+            }
+            self._file.write(self._encode_line(record))
+            self._file.flush()
+            self._sequence = sequence
 
     def close(self, deadline: float | None = None) -> bool:
-        """闭合 XML；指定 deadline 时只在期限内等待 writer 锁。
+        """刷新并关闭 JSONL；指定 deadline 时只在期限内等待 writer 锁。
 
         返回 ``False`` 表示未能及时取得锁，文件保持打开，供仍存活的弹幕线程
-        在退出路径中再次收尾。未指定 deadline 的调用保留正常的阻塞闭合语义。
+        在退出路径中再次收尾。JSONL 不需要写文件尾。未指定 deadline 的调用
+        保留正常的阻塞关闭语义。
         """
         if deadline is None:
             acquired = self._lock.acquire()
@@ -241,32 +306,37 @@ class BilibiliXmlWriter:
         try:
             if self._file is None:
                 return True
-            xml_file = self._file
+            jsonl_file = self._file
             self._file = None
             try:
-                xml_file.write(_XML_FOOTER)
-                xml_file.flush()
+                jsonl_file.flush()
             finally:
-                xml_file.close()
+                jsonl_file.close()
             return True
         finally:
             self._lock.release()
 
 
 class DanmakuRecorder:
-    """在独立 daemon 线程中连接本地伴随服务并维护单次录制的 XML。"""
+    """在独立 daemon 线程中连接本地伴随服务并维护单次录制的 JSONL。"""
 
     def __init__(
         self,
         room_identifier: str,
         service_url: str,
-        xml_path: str | Path,
+        jsonl_path: str | Path,
         started_at: float,
+        started_monotonic: float | None = None,
     ) -> None:
         self.room_identifier = room_identifier
         self.service_url = service_url.strip().rstrip("/")
-        self.xml_path = Path(xml_path)
-        self.writer = BilibiliXmlWriter(self.xml_path, started_at)
+        self.jsonl_path = Path(jsonl_path)
+        self.writer = DanmakuJsonlWriter(
+            self.jsonl_path,
+            room_identifier=room_identifier,
+            started_at=started_at,
+            started_monotonic=started_monotonic,
+        )
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._lifecycle_lock = threading.Lock()
@@ -275,7 +345,7 @@ class DanmakuRecorder:
         self._state_lock = threading.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._task: asyncio.Task[None] | None = None
-        self._leave_xml_open = False
+        self._leave_writer_open = False
 
     @property
     def websocket_url(self) -> str:
@@ -285,9 +355,9 @@ class DanmakuRecorder:
         return f"{base}/{quote(self.room_identifier, safe='')}"
 
     def start(self) -> None:
-        """先建立完整 XML 骨架，再异步连接；任何失败只写日志。"""
+        """先写入 JSONL metadata，再异步连接；任何失败只写日志。"""
         # 先以 ``starting`` 状态登记，再离开全局锁做所有文件 I/O。这样 shutdown
-        # 能看到正在慢 open 的实例，同时不会被 mkdir/open/header write 阻塞。
+        # 能看到正在慢 open 的实例，同时不会被 mkdir/open/metadata write 阻塞。
         with _registry_lock:
             with self._lifecycle_lock:
                 if (
@@ -306,7 +376,7 @@ class DanmakuRecorder:
                 with self._lifecycle_lock:
                     self._lifecycle_state = "stopped"
                     _active_recorders.discard(self)
-            logger.error(f"弹幕 XML 创建失败，视频录制继续: {self.xml_path} ({exc})")
+            logger.error(f"弹幕 JSONL 创建失败，视频录制继续: {self.jsonl_path} ({exc})")
             return
 
         thread = threading.Thread(
@@ -358,7 +428,7 @@ class DanmakuRecorder:
             logger.error(f"弹幕线程启动失败，视频录制继续: {thread_start_error}")
 
     def stop(self, timeout: float = 3.0) -> None:
-        """取消网络任务并在同一个绝对期限内等待和闭合 XML。"""
+        """取消网络任务并在同一个绝对期限内等待和关闭 JSONL。"""
         deadline = time.monotonic() + max(0.0, timeout)
         self._request_stop(deadline)
         self._wait_and_close(deadline)
@@ -384,7 +454,7 @@ class DanmakuRecorder:
                 return
 
     def _wait_and_close(self, deadline: float) -> None:
-        """只在绝对期限内等待；活线程自行负责稍后的 XML 收尾。"""
+        """只在绝对期限内等待；活线程自行负责稍后的 JSONL 收尾。"""
         with self._lifecycle_lock:
             thread = self._thread
         thread_alive = thread is threading.current_thread()
@@ -395,8 +465,8 @@ class DanmakuRecorder:
 
             if thread_alive:
                 logger.warning(
-                    "弹幕线程未在关闭期限内退出，未强制抢占 XML 写锁；"
-                    f"线程退出时将自行闭合，视频录制或进程退出继续: {self.xml_path}"
+                    "弹幕线程未在关闭期限内退出，未强制抢占 JSONL 写锁；"
+                    f"线程退出时将自行关闭，视频录制或进程退出继续: {self.jsonl_path}"
                 )
             else:
                 self._close_writer(deadline=deadline)
@@ -412,17 +482,23 @@ class DanmakuRecorder:
         room_not_found = False
         try:
             payload = json.loads(raw_message)
-            items = payload if isinstance(payload, list) else (payload,)
-            for item in items:
+        except Exception as exc:
+            logger.warning(f"弹幕消息解析或写入失败，已跳过且视频录制继续: {exc}")
+            return _RawMessageResult()
+
+        items = payload if isinstance(payload, list) else (payload,)
+        for item in items:
+            try:
                 room_not_found = room_not_found or _is_room_not_found(item)
-                valid_business_message = (
-                    valid_business_message or _business_message(item) is not None
-                )
+                if _business_message(item) is not None:
+                    valid_business_message = True
                 message = parse_chat_message(item)
                 if message is not None:
                     self.writer.write(message, received_at=received_at)
-        except Exception as exc:
-            logger.warning(f"弹幕消息解析或写入失败，已跳过且视频录制继续: {exc}")
+            except Exception as exc:
+                logger.warning(
+                    f"弹幕消息解析或写入失败，已跳过且视频录制继续: {exc}"
+                )
         return _RawMessageResult(
             valid_business_message=valid_business_message,
             room_not_found=room_not_found,
@@ -450,7 +526,7 @@ class DanmakuRecorder:
                 self._loop = None
             loop.close()
             leave_open_for_later_stop = (
-                self._leave_xml_open and not self._stop_event.is_set()
+                self._leave_writer_open and not self._stop_event.is_set()
             )
             if not leave_open_for_later_stop:
                 self._close_writer()
@@ -482,7 +558,7 @@ class DanmakuRecorder:
                         if result.valid_business_message:
                             failures = 0
                         if result.room_not_found:
-                            self._leave_xml_open = True
+                            self._leave_writer_open = True
                             logger.warning(
                                 f"弹幕伴随服务报告直播间不存在 ({self.room_identifier})，"
                                 "本轮停止弹幕网络重连，视频录制继续"
@@ -496,7 +572,7 @@ class DanmakuRecorder:
             except Exception as exc:
                 if self._stop_event.is_set():
                     break
-                if self._leave_xml_open:
+                if self._leave_writer_open:
                     return
                 if (
                     connected_at is not None
@@ -525,12 +601,14 @@ class DanmakuRecorder:
         try:
             closed = self.writer.close(deadline=deadline)
         except Exception as exc:
-            logger.error(f"弹幕 XML 关闭失败，视频录制不受影响: {self.xml_path} ({exc})")
+            logger.error(
+                f"弹幕 JSONL 关闭失败，视频录制不受影响: {self.jsonl_path} ({exc})"
+            )
             return False
         if not closed:
             logger.warning(
-                "弹幕 XML 写锁未能在关闭期限内取得，已跳过同步关闭以免阻塞；"
-                f"弹幕线程或启动线程稍后将再次收尾: {self.xml_path}"
+                "弹幕 JSONL 写锁未能在关闭期限内取得，已跳过同步关闭以免阻塞；"
+                f"弹幕线程或启动线程稍后将再次收尾: {self.jsonl_path}"
             )
         return closed
 
@@ -552,13 +630,13 @@ def stop_all_active_recorders(timeout: float = 3.0) -> None:
         try:
             recorder._request_stop(deadline)
         except Exception as exc:
-            logger.error(f"进程关闭时取消弹幕录制失败: {recorder.xml_path} ({exc})")
+            logger.error(f"进程关闭时取消弹幕录制失败: {recorder.jsonl_path} ({exc})")
 
     for recorder in recorders:
         try:
             recorder._wait_and_close(deadline)
         except Exception as exc:
-            # shutdown 不能因单个 recorder 的异常阻止其它 XML 收尾或进程退出。
-            logger.error(f"进程关闭时停止弹幕录制失败: {recorder.xml_path} ({exc})")
+            # shutdown 不能因单个 recorder 的异常阻止其它 JSONL 收尾或进程退出。
+            logger.error(f"进程关闭时停止弹幕录制失败: {recorder.jsonl_path} ({exc})")
             with _registry_lock:
                 _active_recorders.discard(recorder)

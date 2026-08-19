@@ -43,7 +43,7 @@ os.environ["PATH"] = ffmpeg_path + os.pathsep + current_env_path
 
 def _signal_handler(_signum, _frame):
     # 不在信号处理器里获取 runtime.state_lock：信号可能恰好中断持锁的主线程。
-    # 先让所有录制 worker 停止/拒绝新工作，再闭合仍登记中的弹幕 XML。
+    # 先让所有录制 worker 停止/拒绝新工作，再关闭仍登记中的弹幕 JSONL。
     runtime.exit_recording = True
     try:
         stop_all_active_recorders()
