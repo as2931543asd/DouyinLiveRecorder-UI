@@ -22,7 +22,7 @@ url_tuples_list: list[tuple] = []
 text_no_repeat_url: list[tuple] = []
 # worker 抓到的新昵称：以 URL 为键覆盖旧值，主循环每 3 秒批量回写配置。
 pending_name_updates: dict[str, str] = {}
-# 当前抖音返回的主播名，供 WebUI 在配置回写前立即展示。
+# 当前平台返回的主播名，供 WebUI 在配置回写前立即展示。
 current_anchor_names: dict[str, str] = {}
 # 最近一次成功轮询仍标记为直播、但 ffmpeg 暂未录制的 URL（通常正在冷却重连）。
 live_urls: set[str] = set()

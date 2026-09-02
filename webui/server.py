@@ -25,7 +25,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from src import live_history, runtime
+from src import live_history, platforms, runtime
 from src.config_loader import text_encoding
 from src.logger import get_recent_logs
 
@@ -197,15 +197,12 @@ async def get_streamers():
 
 @app.post("/api/streamers")
 async def add_streamer(data: StreamerAdd):
-    url = data.url.strip()
-    if "://" not in url:
-        url = "https://" + url
-
-    url_host = url.split("/")[2] if len(url.split("/")) > 2 else ""
-    if url_host not in ("live.douyin.com", "v.douyin.com", "www.douyin.com"):
-        return {"ok": False, "error": "仅支持抖音直播链接"}
-    if url_host == "live.douyin.com":
-        url = url.split("?")[0]
+    url = platforms.normalize_supported_url(data.url)
+    if not url:
+        return {
+            "ok": False,
+            "error": "仅支持抖音直播链接、小红书 livestream 直链或 xhslink 分享短链",
+        }
 
     normalized_url = _normalize_streamer_url(url)
     for s in _parse_url_config():
@@ -327,9 +324,12 @@ def _parse_url_config() -> list[dict]:
                         ended_at_raw = None
 
                 configured_name = name.replace("主播: ", "").strip()
+                platform_id = platforms.identify_platform(url)
 
                 streamers.append({
                     "url": url,
+                    "platform": platform_id,
+                    "platform_name": platforms.platform_name(platform_id or ""),
                     "quality": quality,
                     "name": current_name_snapshot.get(url, configured_name),
                     "paused": paused,

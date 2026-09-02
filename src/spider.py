@@ -20,6 +20,192 @@ from .logger import logger
 
 OptionalStr = str | None
 
+_XHS_USER_AGENT = "ios/7.830 (ios 17.0; ; iPhone 15 (A2846/A3089/A3090/A3092))"
+_XHS_COMMON_PARAMS = "platform=iOS&sid=session.1722166379345546829388"
+_XHS_REFERER = "https://app.xhs.cn/"
+
+
+def _parse_xhs_initial_state(html_str: str) -> dict | None:
+    match = re.search(
+        r"window\.__INITIAL_STATE__\s*=\s*(.*?)</script>",
+        html_str,
+        re.DOTALL,
+    )
+    if not match:
+        return None
+    payload = match.group(1).strip().rstrip(";")
+    try:
+        return json.loads(payload.replace("undefined", "null"))
+    except json.JSONDecodeError:
+        return None
+
+
+def _xhs_deeplink_params(room_info: dict) -> dict[str, list[str]]:
+    deeplink = room_info.get("deeplink") or ""
+    try:
+        return urllib.parse.parse_qs(urllib.parse.urlparse(deeplink).query)
+    except (TypeError, ValueError):
+        return {}
+
+
+def _xhs_stream_urls(
+    room_info: dict,
+    video_quality: str | None,
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """返回 (flv, hls, codec, quality)，优先使用 H.264 和所选画质。"""
+    pull_config = room_info.get("pullConfig")
+    if isinstance(pull_config, str):
+        try:
+            pull_config = json.loads(pull_config)
+        except json.JSONDecodeError:
+            pull_config = None
+
+    desired_quality = {
+        "OD": "HD",
+        "BD": "HD",
+        "UHD": "HD",
+        "HD": "HD",
+        "SD": "SD",
+        "LD": "LD",
+    }.get(str(video_quality or "OD").upper(), "HD")
+
+    if isinstance(pull_config, dict):
+        for codec_key in ("h264", "h265"):
+            raw_streams = pull_config.get(codec_key) or []
+            if not isinstance(raw_streams, list) or not raw_streams:
+                continue
+
+            streams = [item for item in raw_streams if isinstance(item, dict)]
+            available_qualities = [
+                str(item.get("quality_type") or "HD").upper() for item in streams
+            ]
+            quality_order = [desired_quality, "HD", "SD", "LD"]
+            quality_order.extend(q for q in available_qualities if q not in quality_order)
+            for selected_quality in quality_order:
+                flv_url = None
+                m3u8_url = None
+                for item in streams:
+                    quality = str(item.get("quality_type") or "HD").upper()
+                    if quality != selected_quality:
+                        continue
+                    stream_url = item.get("master_url") or item.get("url")
+                    if not isinstance(stream_url, str) or not stream_url:
+                        continue
+                    path = urllib.parse.urlsplit(stream_url).path.lower()
+                    if path.endswith(".flv") and flv_url is None:
+                        flv_url = stream_url
+                    elif path.endswith(".m3u8") and m3u8_url is None:
+                        m3u8_url = stream_url
+                if flv_url or m3u8_url:
+                    return flv_url, m3u8_url, codec_key, selected_quality
+
+    # 兼容旧页面：流地址只出现在 deeplink 查询参数中。
+    params = _xhs_deeplink_params(room_info)
+    flv_url = (params.get("flvUrl") or params.get("flv_url") or [None])[0]
+    m3u8_url = (params.get("hlsUrl") or params.get("m3u8Url") or [None])[0]
+    if flv_url and not m3u8_url:
+        m3u8_url = re.sub(r"\.flv(?=\?|$)", ".m3u8", flv_url, flags=re.IGNORECASE)
+    return flv_url, m3u8_url, "h264", None
+
+
+async def get_xhs_stream_url(
+    url: str,
+    video_quality: str | None = None,
+    proxy_addr: OptionalStr = None,
+    cookies: OptionalStr = None,
+) -> dict:
+    """解析小红书当前直播间；不提供基于主播主页的长期开播发现。"""
+    result = {
+        "anchor_name": "",
+        "is_live": False,
+        "fetch_ok": False,
+    }
+    headers = {
+        "User-Agent": _XHS_USER_AGENT,
+        "xy-common-params": _XHS_COMMON_PARAMS,
+        "Referer": _XHS_REFERER,
+    }
+    if cookies:
+        headers["Cookie"] = cookies
+
+    try:
+        resolved_url = url
+        if "xhslink.com" in urllib.parse.urlparse(url).netloc.lower():
+            redirect_url = await async_req(
+                url,
+                proxy_addr=proxy_addr,
+                headers=headers,
+                redirect_url=True,
+            )
+            if isinstance(redirect_url, str) and redirect_url:
+                resolved_url = redirect_url
+
+        resolved = urllib.parse.urlsplit(resolved_url)
+        if (resolved.hostname or "").rstrip(".").lower() not in {
+            "xiaohongshu.com",
+            "www.xiaohongshu.com",
+        }:
+            raise ValueError("分享链接未跳转到小红书直播间")
+        room_match = re.fullmatch(
+            r"/livestream/(?:[A-Za-z0-9_-]+/)?(\d+)/?",
+            resolved.path,
+        )
+        if not room_match:
+            raise ValueError("分享链接未跳转到有效的小红书直播间地址")
+
+        room_id = room_match.group(1)
+        room_url = f"https://www.xiaohongshu.com/livestream/{room_id}"
+        html_str = await async_req(room_url, proxy_addr=proxy_addr, headers=headers)
+        if not isinstance(html_str, str) or not html_str:
+            raise RuntimeError("直播间页面返回为空")
+
+        state = _parse_xhs_initial_state(html_str)
+        if state is None:
+            raise RuntimeError("直播间页面缺少 __INITIAL_STATE__，可能触发登录限制或页面已更新")
+
+        live_stream = state.get("liveStream") or {}
+        room_info = (live_stream.get("roomData") or {}).get("roomInfo") or {}
+        params = _xhs_deeplink_params(room_info)
+        anchor_name = (params.get("host_nickname") or [""])[0]
+        if not anchor_name:
+            anchor_name = (
+                room_info.get("hostName")
+                or room_info.get("nickname")
+                or room_info.get("anchorName")
+                or ""
+            )
+
+        result.update({
+            "anchor_name": anchor_name,
+            "fetch_ok": True,
+            "room_id": room_id,
+            "title": room_info.get("roomTitle") or "",
+            "ffmpeg_user_agent": _XHS_USER_AGENT,
+            "ffmpeg_referer": _XHS_REFERER,
+        })
+        title = result["title"]
+        if live_stream.get("liveStatus") != "success" or (title and "回放" in title):
+            return result
+
+        flv_url, m3u8_url, codec, quality = _xhs_stream_urls(room_info, video_quality)
+        real_url = flv_url or m3u8_url
+        if not real_url:
+            raise RuntimeError("直播间已开播，但页面中没有可用的 FLV/HLS 地址")
+
+        result.update({
+            "is_live": True,
+            "flv_url": flv_url,
+            "m3u8_url": m3u8_url,
+            "record_url": real_url,
+            "codec": codec,
+            "quality": quality,
+        })
+    except Exception as exc:
+        result["fetch_ok"] = False
+        result["error"] = str(exc)
+        logger.warning(f"小红书直播解析失败 ({url}): {exc}")
+    return result
+
 
 async def get_douyin_web_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None):
     headers = {

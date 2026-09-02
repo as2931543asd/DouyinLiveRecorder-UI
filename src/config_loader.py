@@ -95,3 +95,4 @@ class Settings:
             g("录制设置", "稳定录制后重置退避时间(秒)", 300)
         )
         self.dy_cookie = g("Cookie", "抖音cookie", "")
+        self.xhs_cookie = g("Cookie", "小红书cookie", "")

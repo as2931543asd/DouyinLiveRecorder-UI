@@ -24,7 +24,7 @@ from typing import Callable, Literal, TextIO
 RecordResult = Literal["stop", "corrupt_restart", "ended", "finished"]
 SubprocessStartedCallback = Callable[[float, float], None]
 
-from . import live_history, runtime, spider, stream, utils
+from . import live_history, platforms, runtime, spider, stream, utils
 from .config_loader import Settings
 from .danmaku import DanmakuRecorder, danmaku_jsonl_path, extract_room_identifier
 from .logger import logger
@@ -385,13 +385,18 @@ _USER_AGENT = (
 )
 
 
-def _ffmpeg_prologue(real_url: str, proxy_addr: str | None) -> list[str]:
+def _ffmpeg_prologue(
+    real_url: str,
+    proxy_addr: str | None,
+    user_agent: str | None = None,
+    referer: str | None = None,
+) -> list[str]:
     cmd = [
         "ffmpeg", "-y",
         "-v", "warning",
         "-rw_timeout", "15000000",
         "-hide_banner",
-        "-user_agent", _USER_AGENT,
+        "-user_agent", user_agent or _USER_AGENT,
         "-protocol_whitelist", "rtmp,crypto,file,http,https,tcp,tls,udp,rtp,httpproxy",
         "-thread_queue_size", "1024",
         "-analyzeduration", "20000000",
@@ -409,6 +414,9 @@ def _ffmpeg_prologue(real_url: str, proxy_addr: str | None) -> list[str]:
     if proxy_addr:
         cmd.insert(1, "-http_proxy")
         cmd.insert(2, proxy_addr)
+    if referer:
+        input_index = cmd.index("-i")
+        cmd[input_index:input_index] = ["-referer", referer]
     return cmd
 
 
@@ -459,6 +467,8 @@ def _record_once(
     record_url: str,
     settings: Settings,
     danmaku_room_identifier: str | None = None,
+    ffmpeg_user_agent: str | None = None,
+    ffmpeg_referer: str | None = None,
 ) -> RecordResult:
     """执行一次录制（一场直播一个文件）。
 
@@ -481,7 +491,12 @@ def _record_once(
     save_file_path = f"{full_path}/{filename}"
     logger.info(f"{anchor_name} 准备开始录制视频: {save_file_path}")
 
-    ffmpeg_command = _ffmpeg_prologue(real_url, settings.proxy_addr)
+    ffmpeg_command = _ffmpeg_prologue(
+        real_url,
+        settings.proxy_addr,
+        user_agent=ffmpeg_user_agent,
+        referer=ffmpeg_referer,
+    )
     if segmented:
         ffmpeg_command.extend(_segment_args(record_save_type, settings.split_time))
     else:
@@ -590,6 +605,45 @@ def _build_full_path(
 
 # ---------- 外层 worker -----------------------------------------------------
 
+def _fetch_stream_info(
+    platform_id: str,
+    record_url: str,
+    record_quality: str | None,
+    settings: Settings,
+) -> tuple[dict, dict]:
+    """抓取平台数据，统一返回 (录制信息, 原始房间数据)。"""
+    raw_room_data: dict = {}
+    if platform_id == platforms.DOUYIN:
+        if "v.douyin.com" not in record_url and "/user/" not in record_url:
+            raw_room_data = runtime.run_coro(spider.get_douyin_web_stream_data(
+                url=record_url,
+                proxy_addr=settings.proxy_addr,
+                cookies=settings.dy_cookie,
+            ))
+        else:
+            raw_room_data = runtime.run_coro(spider.get_douyin_app_stream_data(
+                url=record_url,
+                proxy_addr=settings.proxy_addr,
+                cookies=settings.dy_cookie,
+            ))
+        port_info = runtime.run_coro(
+            stream.get_douyin_stream_url(raw_room_data, record_quality, settings.proxy_addr)
+        )
+    elif platform_id == platforms.XIAOHONGSHU:
+        port_info = runtime.run_coro(spider.get_xhs_stream_url(
+            url=record_url,
+            video_quality=record_quality,
+            proxy_addr=settings.proxy_addr,
+            cookies=getattr(settings, "xhs_cookie", ""),
+        ))
+    else:
+        return {}, raw_room_data
+
+    return (port_info if isinstance(port_info, dict) else {}), (
+        raw_room_data if isinstance(raw_room_data, dict) else {}
+    )
+
+
 def start_record(
     url_data: tuple,
     settings: Settings,
@@ -606,6 +660,12 @@ def start_record(
     disconnect_streak = 0
     corrupt_restart_streak = 0
     poll_error_streak = 0
+    platform_id = platforms.identify_platform(record_url)
+    if platform_id is None:
+        logger.error(f"{record_url} 不支持的直播地址")
+        clear_record_info(worker_name, record_url)
+        return
+    platform = platforms.platform_name(platform_id)
 
     while True:
         try:
@@ -616,44 +676,36 @@ def start_record(
                     if _exit_if_stop_requested(worker_name, record_url):
                         return
 
-                    if "douyin.com/" not in record_url:
-                        logger.error(f"{record_url} 不支持的直播地址，仅支持抖音直播")
-                        return
-
-                    platform = "抖音直播"
                     with runtime.semaphore:
                         if _exit_if_stop_requested(worker_name, record_url):
                             return
-
-                        if "v.douyin.com" not in record_url and "/user/" not in record_url:
-                            json_data = runtime.run_coro(spider.get_douyin_web_stream_data(
-                                url=record_url,
-                                proxy_addr=settings.proxy_addr,
-                                cookies=settings.dy_cookie,
-                            ))
-                        else:
-                            json_data = runtime.run_coro(spider.get_douyin_app_stream_data(
-                                url=record_url,
-                                proxy_addr=settings.proxy_addr,
-                                cookies=settings.dy_cookie,
-                            ))
-                        port_info = runtime.run_coro(
-                            stream.get_douyin_stream_url(json_data, record_quality, settings.proxy_addr)
+                        port_info, json_data = _fetch_stream_info(
+                            platform_id, record_url, record_quality, settings
                         )
 
-                    # 抖音当前昵称是录制目录与 WebUI 的唯一事实来源；配置中的
-                    # 名称仅用于首次抓取成功前的日志展示。
                     fetched_anchor_name = port_info.get("anchor_name", "")
-                    if not fetched_anchor_name:
+                    fetch_failed = not port_info or (
+                        platform_id == platforms.XIAOHONGSHU
+                        and not port_info.get("fetch_ok", False)
+                    )
+                    if platform_id == platforms.DOUYIN and not fetched_anchor_name:
+                        fetch_failed = True
+
+                    if fetch_failed:
                         poll_error_streak += 1
+                        error_detail = port_info.get("error")
                         logger.warning(
-                            f"序号{count_variable} 网址内容获取失败，进行重试中… 地址: {url_data}"
+                            f"序号{count_variable} 网址内容获取失败，进行重试中… 地址: {record_url}"
+                            + (f"；原因: {error_detail}" if error_detail else "")
                         )
                         with runtime.max_request_lock:
                             runtime.error_count += 1
                             runtime.error_window.append(1)
                     else:
                         poll_error_streak = 0
+                        if not fetched_anchor_name:
+                            room_suffix = port_info.get("room_id") or "当前场次"
+                            fetched_anchor_name = configured_anchor_name or f"小红书直播_{room_suffix}"
                         anchor_name = clean_name(fetched_anchor_name, settings.clean_emoji)
                         record_name = f"序号{count_variable} {anchor_name}"
                         worker_name = record_name
@@ -668,7 +720,7 @@ def start_record(
                         with runtime.state_lock:
                             runtime.current_anchor_names[record_url] = anchor_name
 
-                        if port_info["is_live"]:
+                        if port_info.get("is_live", False):
                             if live_session_started_at is None:
                                 live_session_started_at = datetime.datetime.now().astimezone()
                             with runtime.state_lock:
@@ -676,10 +728,12 @@ def start_record(
 
                             flv_url = port_info.get("flv_url")
                             codec = utils.get_query_params(flv_url, "codec") if flv_url else None
-                            is_h265 = bool(codec and codec[0] == "h265")
+                            is_h265 = port_info.get("codec") == "h265" or bool(
+                                codec and codec[0] == "h265"
+                            )
                             if is_h265:
                                 logger.warning("FLV 不支持 h265 编码，改用 HLS 源并强制 TS 容器")
-                                real_url = port_info.get("record_url")
+                                real_url = port_info.get("m3u8_url") or port_info.get("record_url")
                             else:
                                 real_url = flv_url or port_info.get("record_url")
 
@@ -705,7 +759,7 @@ def start_record(
 
                                 record_save_type = "TS" if is_h265 else settings.video_save_type
                                 danmaku_room_identifier = None
-                                if settings.record_danmaku:
+                                if settings.record_danmaku and platform_id == platforms.DOUYIN:
                                     danmaku_room_identifier = extract_room_identifier(
                                         json_data, record_url
                                     )
@@ -714,6 +768,10 @@ def start_record(
                                             f"[{record_name}] 无法从直播 API 或 live.douyin.com "
                                             "路径确定弹幕直播间标识，本轮跳过弹幕，视频录制继续"
                                         )
+                                elif settings.record_danmaku:
+                                    logger.info(
+                                        f"[{record_name}] 小红书暂不支持弹幕录制，视频录制继续"
+                                    )
 
                                 should_return = _record_once(
                                     real_url=real_url,
@@ -725,6 +783,8 @@ def start_record(
                                     record_url=record_url,
                                     settings=settings,
                                     danmaku_room_identifier=danmaku_room_identifier,
+                                    ffmpeg_user_agent=port_info.get("ffmpeg_user_agent"),
+                                    ffmpeg_referer=port_info.get("ffmpeg_referer"),
                                 )
                                 if should_return == "stop":
                                     return

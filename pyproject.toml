@@ -1,7 +1,7 @@
 [project]
 name = "DouyinLiveRecorder"
 version = "4.0.7"
-description = "可循环值守和多人录制的抖音直播录制软件"
+description = "带 Web UI 的抖音直播录制与小红书当前直播间录制工具"
 readme = "README.md"
 authors = [{name = "Hmily"}]
 license = { text = "MIT" }

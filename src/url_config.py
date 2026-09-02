@@ -16,14 +16,11 @@ import threading
 import time
 from pathlib import Path
 
-from . import live_history, runtime, utils
+from . import live_history, platforms, runtime, utils
 from .config_loader import QUALITY_CHOICES, Settings, text_encoding
 from .file_ops import delete_line, update_file
 from .logger import logger
 from .recorder import start_record
-
-_DOUYIN_HOSTS = {"live.douyin.com", "v.douyin.com", "www.douyin.com"}
-
 
 def _webui_display_url() -> str:
     host = os.environ.get("WEBUI_HOST", "0.0.0.0")
@@ -82,7 +79,7 @@ def _normalize_line(line: str, default_quality: str) -> str | None:
 
 
 def get_configured_urls(url_config_file: str, default_quality: str) -> list[str]:
-    """读取全部有效抖音 URL（包含暂停项），供启动时初始化历史统计。"""
+    """读取全部受支持 URL（包含暂停项），供启动时初始化历史统计。"""
     urls: list[str] = []
     try:
         with runtime.file_update_lock:
@@ -97,13 +94,9 @@ def get_configured_urls(url_config_file: str, default_quality: str) -> list[str]
         if not parsed:
             continue
         _, url, _ = parsed
-        url = _ensure_scheme(url)
-        parts = url.split("/")
-        host = parts[2] if len(parts) > 2 else ""
-        if host in _DOUYIN_HOSTS:
-            normalized_url = url.split("?")[0]
-            if normalized_url not in urls:
-                urls.append(normalized_url)
+        normalized_url = platforms.normalize_supported_url(url)
+        if normalized_url and normalized_url not in urls:
+            urls.append(normalized_url)
     return urls
 
 
@@ -116,7 +109,10 @@ def _apply_name_updates(
     if not updates:
         return 0
 
-    target_updates = {_ensure_scheme(url).split("?")[0]: name for url, name in updates.items()}
+    target_updates = {
+        platforms.normalize_supported_url(url) or _ensure_scheme(url).split("?")[0]: name
+        for url, name in updates.items()
+    }
     changed = 0
 
     with runtime.file_update_lock:
@@ -138,7 +134,10 @@ def _apply_name_updates(
                 continue
 
             quality, url, old_name = parsed
-            normalized_url = _ensure_scheme(url).split("?")[0]
+            normalized_url = (
+                platforms.normalize_supported_url(url)
+                or _ensure_scheme(url).split("?")[0]
+            )
             latest_name = target_updates.get(normalized_url)
             if latest_name is None:
                 rewritten.append(origin_line)
@@ -232,20 +231,21 @@ def load_and_dispatch(
                     continue
                 quality, url, name = parsed
 
-                if url not in url_line_list:
-                    url_line_list.append(url)
-                else:
-                    delete_line(url_config_file, origin_line)
-
-                url = _ensure_scheme(url)
-                url_host = url.split("/")[2] if len(url.split("/")) > 2 else ""
-
-                if url_host in _DOUYIN_HOSTS:
-                    if url_host == "live.douyin.com":
-                        url = update_file(
-                            url_config_file, old_str=url, new_str=url.split("?")[0],
+                normalized_url = platforms.normalize_supported_url(url)
+                if normalized_url:
+                    original_url = _ensure_scheme(url)
+                    if original_url != normalized_url:
+                        update_file(
+                            url_config_file,
+                            old_str=original_url,
+                            new_str=normalized_url,
                             fallback_content=ini_url_content,
                         )
+                    url = normalized_url
+                    if url in url_line_list:
+                        delete_line(url_config_file, origin_line)
+                        continue
+                    url_line_list.append(url)
 
                     seen_urls.add(url)
                     new_url_comments = [i for i in new_url_comments if url not in i]
@@ -256,7 +256,7 @@ def load_and_dispatch(
                 else:
                     if not origin_line.startswith("#"):
                         logger.warning(
-                            f"{origin_line.strip()} 不是抖音直播链接，此条跳过并已注释"
+                            f"{origin_line.strip()} 不是受支持的直播链接，此条跳过并已注释"
                         )
                         update_file(
                             url_config_file, old_str=origin_line, new_str=origin_line,

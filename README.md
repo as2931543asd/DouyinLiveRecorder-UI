@@ -2,20 +2,20 @@
 
 ## 简介
 
-`DouyinLiveRecorder-UI` 是一个面向抖音直播录制场景的轻量化值守工具，提供 Web UI 管理界面，方便统一维护录制任务、查看状态与日志。
+`DouyinLiveRecorder-UI` 是一个支持抖音和小红书直播录制的轻量化工具，提供 Web UI 管理界面，方便统一维护录制任务、查看状态与日志。
 
-项目基于 [ihmily/DouyinLiveRecorder](https://github.com/ihmily/DouyinLiveRecorder) 精简和改造，仅保留抖音直播录制相关能力，并补充了更直观的前端管理页面，适合长期挂机监控、录制和日常运维。
+项目基于 [ihmily/DouyinLiveRecorder](https://github.com/ihmily/DouyinLiveRecorder) 精简和改造，保留抖音录制能力，并提供小红书当前直播间的基础录制支持和更直观的前端管理页面。
 
 ![Web UI 预览](./ui.png)
 
 ## 功能特点
 
-- 仅聚焦抖音直播录制，减少无关功能干扰；
+- 支持抖音直播间，以及小红书 `livestream` 直链和 `xhslink.com` 分享短链；
 - 提供 Web UI，可直接管理主播列表、查看实时状态和运行日志；
 - 持久记录每位主播上次直播结束时间，并在列表中显示距今时长；
 - 自动跟随抖音最新主播昵称，同步监控列表、录制目录和文件名；
 - 基于 FFmpeg 录制直播流，输出稳定，可配合现有存储目录使用；
-- 可选同步录制普通聊天弹幕，输出可逐行解析的结构化 JSON Lines；
+- 抖音可选同步录制普通聊天弹幕，输出可逐行解析的结构化 JSON Lines；
 - 支持根据 FFmpeg 坏流日志自动判定疑似花屏并快速重录，减少长时间写入损坏 TS 的情况；
 - 支持通过 `config.ini` 和 `URL_config.ini` 调整录制与轮询策略；
 - 适合通过 `systemd` 长期托管运行。
@@ -63,12 +63,13 @@
     ├── /src
     │   ├── runtime.py -> (跨线程共享状态、锁、常驻 asyncio 事件循环)
     │   ├── config_loader.py -> (config.ini 读取与热重载)
+    │   ├── platforms.py -> (平台 URL 识别与规范化)
     │   ├── url_config.py -> (URL_config.ini 解析与 worker 调度)
     │   ├── recorder.py -> (单直播间录制 worker，封装 ffmpeg 子进程)
     │   ├── danmaku.py -> (本地伴随服务客户端与结构化 JSONL 弹幕写入)
     │   ├── monitor.py -> (根据错误率动态调整 max_request)
     │   ├── file_ops.py -> (URL_config 行级改写 + 配置备份)
-    │   ├── spider.py -> (抖音 Web/App 端直播数据抓取)
+    │   ├── spider.py -> (抖音与小红书直播数据抓取)
     │   ├── stream.py -> (从抓取结果提取流地址、画质映射)
     │   ├── room.py -> (抖音分享链接与用户 ID 解析)
     │   ├── ab_sign.py -> (a_bogus 签名: SM3 + RC4)
@@ -93,9 +94,17 @@ https://live.douyin.com/745964462470
 https://v.douyin.com/iQFeBnt/
 https://live.douyin.com/yall1102  (链接+抖音号)
 https://v.douyin.com/CeiU5cbX  (主播主页地址)
+
+https://www.xiaohongshu.com/livestream/570321613446566013
+http://xhslink.com/xxxxxx  (直播间分享短链)
 ```
 
 可通过 WebUI 或在 `config/URL_config.ini` 中手动添加直播间地址，一行一个。
+
+小红书当前只支持录制**本场直播间**，不支持用作者主页长期发现其下一场直播；
+直播间链接失效或主播下次开播生成新链接后，需要重新添加新的直播间链接。小红书
+暂不支持弹幕录制。页面可匿名访问时无需 Cookie；若出现登录限制，可在
+`config/config.ini` 的 `[Cookie]` 中填写 `小红书cookie`。
 
 如需自定义配置，可修改 `config/config.ini` 文件。
 

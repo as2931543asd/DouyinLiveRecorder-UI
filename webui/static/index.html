@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>抖音直播录制 · 控制面板</title>
+<title>直播录制 · 控制面板</title>
 <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
 <style>
 /* ================= Design tokens ================= */
@@ -539,9 +539,9 @@ a { color: inherit; text-decoration: none; }
 
   <!-- ================= Topbar ================= -->
   <div class="topbar">
-    <div class="logo">抖</div>
+    <div class="logo">录</div>
     <div>
-      <div class="title">抖音直播录制</div>
+      <div class="title">直播录制</div>
       <div class="subtitle">Live Recording Dashboard</div>
     </div>
 
@@ -695,7 +695,7 @@ a { color: inherit; text-decoration: none; }
                   距上次直播 {{ formatElapsed(s.last_live_elapsed_seconds) }}
                 </div>
               </div>
-              <span class="quality-badge">{{ s.quality }}</span>
+              <span class="quality-badge">{{ s.platform_name ? s.platform_name + ' · ' : '' }}{{ s.quality }}</span>
               <div class="row-actions">
                 <a class="btn-icon" :href="normalizedUrl(s.url)" target="_blank" rel="noopener" title="跳转到直播间">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
@@ -757,8 +757,8 @@ a { color: inherit; text-decoration: none; }
       <div class="modal-body">
         <div class="field">
           <label>直播间链接</label>
-          <input v-model="newStreamer.url" ref="urlInput" placeholder="https://live.douyin.com/..." @keyup.enter="addStreamer">
-          <div class="hint">支持 live.douyin.com / v.douyin.com / www.douyin.com</div>
+          <input v-model="newStreamer.url" ref="urlInput" placeholder="粘贴抖音或小红书直播链接" @keyup.enter="addStreamer">
+          <div class="hint">支持抖音直播链接、小红书 livestream 直链和 xhslink.com 分享短链</div>
         </div>
         <div class="field">
           <label>画质</label>
@@ -1023,7 +1023,6 @@ createApp({
 
     async function openAdd() {
       showAdd.value = true;
-      if (!newStreamer.url) newStreamer.url = 'https://live.douyin.com/';
       await nextTick();
       const el = urlInput.value;
       if (el) {

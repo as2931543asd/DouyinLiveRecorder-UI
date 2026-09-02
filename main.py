@@ -65,7 +65,7 @@ def _print_banner() -> None:
     logger.info("========== DouyinLiveRecorder-UI ==========")
     logger.info(f"版本号: {version}")
     logger.info("GitHub: https://github.com/as2931543asd/DouyinLiveRecorder-UI")
-    logger.info("支持平台: 抖音")
+    logger.info("支持平台: 抖音、小红书（当前直播间基础录制）")
 
 
 def _enforce_disk_space(settings: Settings, first_run: bool) -> None:
