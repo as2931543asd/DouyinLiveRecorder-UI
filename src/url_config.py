@@ -18,7 +18,6 @@ from pathlib import Path
 
 from . import live_history, platforms, runtime, utils
 from .config_loader import QUALITY_CHOICES, Settings, text_encoding
-from .file_ops import delete_line, update_file
 from .logger import logger
 from .recorder import start_record
 
@@ -110,7 +109,8 @@ def _apply_name_updates(
         return 0
 
     target_updates = {
-        platforms.normalize_supported_url(url) or _ensure_scheme(url).split("?")[0]: name
+        platforms.normalize_supported_url(url) or _ensure_scheme(url).split("?")[0]:
+        re.sub(r"[\x00-\x1f\x7f,，\u0085\u2028\u2029]", "_", name).strip()
         for url, name in updates.items()
     }
     changed = 0
@@ -118,7 +118,7 @@ def _apply_name_updates(
     with runtime.file_update_lock:
         path = Path(url_config_file)
         try:
-            lines = path.read_text(encoding=text_encoding, errors="ignore").splitlines(keepends=True)
+            lines = path.read_text(encoding=text_encoding).splitlines(keepends=True)
         except FileNotFoundError:
             return 0
 
@@ -153,9 +153,7 @@ def _apply_name_updates(
             changed += 1
 
         if changed:
-            temporary = path.with_name(f".{path.name}.tmp")
-            temporary.write_text("".join(rewritten), encoding=text_encoding)
-            os.replace(temporary, path)
+            utils.atomic_write_text(path, "".join(rewritten), encoding=text_encoding)
 
     return changed
 
@@ -183,105 +181,80 @@ def _drain_name_updates(url_config_file: str, default_quality: str) -> None:
         raise
 
 
+def parse_streamer_line(line: str) -> tuple[bool, str, str, str] | None:
+    """共享的 WebUI/调度解析器；兼容旧画质列，但对外固定返回原画。"""
+    stripped = line.strip()
+    paused = stripped.startswith("#")
+    content = stripped.lstrip("#").strip() if paused else stripped
+    parsed = _parse_line(content, "原画") if content else None
+    if parsed is None:
+        return None
+    _, url, name = parsed
+    url = platforms.normalize_supported_url(url.strip())
+    if url is None:
+        return None
+    return paused, "原画", url, name.strip()
+
+
+def _load_url_snapshot(url_config_file: str) -> tuple[list[tuple], set[str]]:
+    """读、去重、规范化、回写及停止标志发布共用一把锁，只提交完整版本。"""
+    with runtime.file_update_lock:
+        path = Path(url_config_file)
+        content = path.read_text(encoding=text_encoding)
+        active: list[tuple] = []
+        seen: set[str] = set()
+        paused_urls: list[str] = []
+        rewritten: list[str] = []
+        for line_number, original in enumerate(content.splitlines(keepends=True), 1):
+            parsed = parse_streamer_line(original)
+            if parsed is None:
+                if len(original.strip()) >= 18 and not original.lstrip().startswith("#"):
+                    logger.warning(f"监控配置第 {line_number} 行不是受支持的直播链接，已注释")
+                    rewritten.append("#" + original)
+                else:
+                    rewritten.append(original)
+                continue
+            paused, quality, url, name = parsed
+            if url in seen:
+                continue
+            seen.add(url)
+            if name.count("主播: ") > 1:
+                name = "主播: " + name.rsplit("主播: ", 1)[-1]
+            name = re.sub(r"[\x00-\x1f\x7f\u0085\u2028\u2029]", "_", name)
+            prefix = "#" if paused else ""
+            rewritten.append(f"{prefix}{quality},{url}" + (f",{name}" if name else "") + "\n")
+            if paused:
+                paused_urls.append(url)
+            else:
+                active.append((quality, url, name))
+
+        updated = "".join(rewritten)
+        if updated != content:
+            utils.atomic_write_text(path, updated, encoding=text_encoding)
+        # WebUI 的暂停/恢复也在 file_update_lock 内更新这些标志，避免旧快照
+        # 覆盖刚收到的操作。写入失败时不会到达此处，更不会误停录制任务。
+        with runtime.state_lock:
+            runtime.url_comments = paused_urls + [
+                url for url in runtime.running_list if url not in seen
+            ]
+        return active, seen
+
+
 def load_and_dispatch(
     url_config_file: str,
     settings: Settings,
     default_path: str,
     ini_url_content: str,
 ) -> None:
-    line_list: list[str] = []
-    url_line_list: list[str] = []
-    new_url_comments: list[str] = []
-    seen_urls: set[str] = set()
-
     try:
-        with open(url_config_file, "r", encoding=text_encoding, errors="ignore") as f:
-            for origin_line in f:
-                if origin_line in line_list:
-                    delete_line(url_config_file, origin_line)
-                line_list.append(origin_line)
-
-                line = origin_line.strip()
-                if len(line) < 18:
-                    continue
-
-                # 去掉重复的"主播:"
-                line_spilt = line.split("主播: ")
-                if len(line_spilt) > 2:
-                    line = update_file(
-                        url_config_file, line, f"{line_spilt[0]}主播: {line_spilt[-1]}",
-                        fallback_content=ini_url_content,
-                    )
-
-                is_comment_line = line.startswith("#")
-                if is_comment_line:
-                    line = line.lstrip("#")
-
-                normalized_line = _normalize_line(line, settings.video_record_quality)
-                if normalized_line and normalized_line != line:
-                    line = update_file(
-                        url_config_file,
-                        old_str=line,
-                        new_str=normalized_line,
-                        fallback_content=ini_url_content,
-                    )
-
-                parsed = _parse_line(line, settings.video_record_quality)
-                if not parsed:
-                    continue
-                quality, url, name = parsed
-
-                normalized_url = platforms.normalize_supported_url(url)
-                if normalized_url:
-                    original_url = _ensure_scheme(url)
-                    if original_url != normalized_url:
-                        update_file(
-                            url_config_file,
-                            old_str=original_url,
-                            new_str=normalized_url,
-                            fallback_content=ini_url_content,
-                        )
-                    url = normalized_url
-                    if url in url_line_list:
-                        delete_line(url_config_file, origin_line)
-                        continue
-                    url_line_list.append(url)
-
-                    seen_urls.add(url)
-                    new_url_comments = [i for i in new_url_comments if url not in i]
-                    if is_comment_line:
-                        new_url_comments.append(url)
-                    else:
-                        runtime.url_tuples_list.append((quality, url, name))
-                else:
-                    if not origin_line.startswith("#"):
-                        logger.warning(
-                            f"{origin_line.strip()} 不是受支持的直播链接，此条跳过并已注释"
-                        )
-                        update_file(
-                            url_config_file, old_str=origin_line, new_str=origin_line,
-                            start_str="#", fallback_content=ini_url_content,
-                        )
-
+        _drain_name_updates(url_config_file, "原画")
+        active_urls, seen_urls = _load_url_snapshot(url_config_file)
         initialized_count = live_history.initialize_missing(list(seen_urls))
         if initialized_count:
             logger.info(f"已为 {initialized_count} 个新增主播设置直播时间统计起点")
 
-        _drain_name_updates(url_config_file, settings.video_record_quality)
-
-        # 已从 ini 中整行删除的直播间：借用 url_comments 作为停止信号，
-        # 让 worker 走既有的退出路径（clear_record_info 会摘掉 running_list）。
-        with runtime.state_lock:
-            running_snapshot = list(runtime.running_list)
-        for u in running_snapshot:
-            if u not in seen_urls and u not in new_url_comments:
-                new_url_comments.append(u)
-
-        with runtime.state_lock:
-            runtime.url_comments = new_url_comments
-
-        # dict 保序去重，确保首次缓启动遵循 URL_config 的可预期顺序。
-        runtime.text_no_repeat_url = list(dict.fromkeys(runtime.url_tuples_list))
+        # 只发布本轮完整快照；失败不会遗留一半的待启动列表。
+        runtime.text_no_repeat_url = active_urls
 
         if runtime.text_no_repeat_url:
             pending_urls = [
@@ -296,7 +269,11 @@ def load_and_dispatch(
             for url_tuple in runtime.text_no_repeat_url:
                 with runtime.state_lock:
                     runtime.monitoring = len(runtime.running_list)
-                    skip = url_tuple[1] in runtime.not_record_list
+                    skip = (
+                        runtime.exit_recording
+                        or url_tuple[1] in runtime.not_record_list
+                        or url_tuple[1] in runtime.url_comments
+                    )
                     already_running = url_tuple[1] in runtime.running_list
                     if not skip and not already_running:
                         runtime.monitoring += 1
@@ -329,21 +306,21 @@ def load_and_dispatch(
 
 
 def ensure_url_config_file(url_config_file: str) -> str:
-    """保证 URL_config.ini 存在，返回当前文件内容（用于更新失败时回滚）。"""
+    """仅首次启动创建缺失列表；热运行中丢失文件时不误当成删除全部任务。"""
     ini_url_content = ""
     try:
-        if os.path.isfile(url_config_file):
-            with open(url_config_file, "r", encoding=text_encoding) as f:
-                ini_url_content = f.read().strip()
-        if not ini_url_content.strip():
-            if not os.path.isfile(url_config_file):
-                with open(url_config_file, "w", encoding=text_encoding) as f:
-                    pass
+        with runtime.file_update_lock:
+            path = Path(url_config_file)
+            if not path.exists() and runtime.first_start:
+                utils.atomic_write_text(path, "", encoding=text_encoding)
+            ini_url_content = path.read_text(encoding=text_encoding).strip()
+        if not ini_url_content:
             logger.warning(f"URL_config.ini 为空，请通过 WebUI ({_webui_display_url()}) 添加直播间地址")
-    except OSError as err:
-        logger.error(f"发生 I/O 错误: {err}")
+    except (OSError, UnicodeError):
+        logger.error("监控配置暂时不可读取，保留当前任务，请检查文件是否正在保存及编码")
     return ini_url_content
 
 
 def deduplicate_file(url_config_file: str) -> None:
-    utils.remove_duplicate_lines(url_config_file)
+    with runtime.file_update_lock:
+        utils.remove_duplicate_lines(url_config_file)

@@ -32,15 +32,6 @@ from .logger import logger
 # 文件名里不允许出现的字符
 _RSTR = r"[\/\\\:\*\？?\"\<\>\|&#.。,， ~！· ]"
 
-_QUALITY_MAPPING = {
-    "原画": "OD",
-    "蓝光": "BD",
-    "超清": "UHD",
-    "高清": "HD",
-    "标清": "SD",
-    "流畅": "LD",
-}
-
 _CORRUPT_PATTERNS = (
     "packet corrupt",
     "corrupt input packet",
@@ -55,7 +46,7 @@ _CORRUPT_PATTERNS = (
 )
 
 
-# ---------- 命名 / 画质 ------------------------------------------------------
+# ---------- 命名 -------------------------------------------------------------
 
 def clean_name(text: str, clean_emoji: bool) -> str:
     cleaned = re.sub(_RSTR, "_", text.strip()).strip("_")
@@ -63,10 +54,6 @@ def clean_name(text: str, clean_emoji: bool) -> str:
     if clean_emoji:
         cleaned = utils.remove_emojis(cleaned, "_").strip("_")
     return cleaned or "空白昵称"
-
-
-def get_quality_code(quality_zh: str) -> str | None:
-    return _QUALITY_MAPPING.get(quality_zh)
 
 
 def _configured_anchor_name(raw_name: str, clean_emoji: bool) -> str:
@@ -499,6 +486,13 @@ def _record_once(
     )
     if segmented:
         ffmpeg_command.extend(_segment_args(record_save_type, settings.split_time))
+        if getattr(settings, "record_danmaku", False) and danmaku_room_identifier:
+            # 实际切片受关键帧影响，不能用 split_time * 段号还原边界。
+            from .video_locator import segment_list_path
+            ffmpeg_command.extend([
+                "-segment_list", str(segment_list_path(save_file_path)),
+                "-segment_list_type", "csv", "-segment_list_size", "0",
+            ])
     else:
         ffmpeg_command.extend(_FORMAT_ARGS[record_save_type])
     ffmpeg_command.append(save_file_path)
@@ -651,8 +645,9 @@ def start_record(
     count_variable: int = -1,
 ) -> None:
     """一个 URL 一个线程的主循环。"""
-    record_quality_zh, record_url, anchor_name_hint = url_data
-    record_quality = get_quality_code(record_quality_zh)
+    _, record_url, anchor_name_hint = url_data
+    # 兼容历史三列配置/调用方，但录制一律优先请求原画（平台最高可用档）。
+    record_quality_zh, record_quality = "原画", "OD"
     worker_name = f"序号{count_variable} {anchor_name_hint or record_url}"
     configured_anchor_name = _configured_anchor_name(anchor_name_hint, settings.clean_emoji)
     live_session_started_at: datetime.datetime | None = None

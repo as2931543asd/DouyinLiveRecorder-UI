@@ -38,31 +38,29 @@ def update_file(
                         file_data.append(text_line)
             except RuntimeError as e:
                 logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
-                if fallback_content:
-                    with open(file_path, "w", encoding=text_encoding) as f2:
-                        f2.write(fallback_content)
-                    return old_str
+                # 读取失败时不发布不完整内容，也不以过期快照覆盖原文件。
+                return old_str
         if file_data:
-            with open(file_path, "w", encoding=text_encoding) as f:
-                f.write("".join(file_data))
+            utils.atomic_write_text(file_path, "".join(file_data), encoding=text_encoding)
         return new_str
 
 
 def delete_line(file_path: str, del_line: str, delete_all: bool = False) -> None:
     with runtime.file_update_lock:
-        with open(file_path, "r+", encoding=text_encoding) as f:
+        with open(file_path, "r", encoding=text_encoding) as f:
             lines = f.readlines()
-            f.seek(0)
-            f.truncate()
-            skip_line = False
-            for txt_line in lines:
-                if del_line in txt_line:
-                    if delete_all or not skip_line:
-                        skip_line = True
-                        continue
-                else:
-                    skip_line = False
-                f.write(txt_line)
+        kept_lines = []
+        skip_line = False
+        for txt_line in lines:
+            if del_line in txt_line:
+                if delete_all or not skip_line:
+                    skip_line = True
+                    continue
+            else:
+                skip_line = False
+            kept_lines.append(txt_line)
+        if kept_lines != lines:
+            utils.atomic_write_text(file_path, "".join(kept_lines), encoding=text_encoding)
 
 
 def backup_file(file_path: str, backup_dir_path: str, limit_counts: int = 6) -> None:

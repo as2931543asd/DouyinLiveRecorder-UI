@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 import os
 import shutil
+import stat
+import tempfile
 from pathlib import Path
 import functools
 import hashlib
@@ -54,15 +56,37 @@ def remove_emojis(text: str, replace_text: str = '') -> str:
     return emoji_pattern.sub(replace_text, text)
 
 
+def atomic_write_text(file_path: str | Path, content: str, encoding: str = 'utf-8') -> None:
+    """同目录写好并同步临时文件，再替换目标；调用者负责读改写事务的锁。"""
+    path = Path(file_path).resolve()
+    mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode='w', encoding=encoding, dir=path.parent,
+            prefix=f'.{path.name}.', suffix='.tmp', delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def remove_duplicate_lines(file_path: str | Path) -> None:
     unique_lines = OrderedDict()
     text_encoding = 'utf-8-sig'
     with open(file_path, 'r', encoding=text_encoding) as input_file:
-        for line in input_file:
-            unique_lines[line.strip()] = None
-    with open(file_path, 'w', encoding=text_encoding) as output_file:
-        for line in unique_lines:
-            output_file.write(line + '\n')
+        original = input_file.read()
+    for line in original.splitlines():
+        unique_lines[line.strip()] = None
+    content = ''.join(line + '\n' for line in unique_lines)
+    if content != original:
+        atomic_write_text(file_path, content, encoding=text_encoding)
 
 
 def check_disk_capacity(file_path: str | Path, show: bool = False) -> float:

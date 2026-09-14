@@ -220,7 +220,7 @@ a { color: inherit; text-decoration: none; }
   display: flex; align-items: center; gap: 8px;
   margin-top: 4px; font-size: 12px; color: var(--text-muted);
 }
-.quality-badge {
+.platform-badge {
   display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 4px;
   background: var(--brand-soft); color: var(--brand);
   font-size: 11px; font-weight: 600;
@@ -523,7 +523,7 @@ a { color: inherit; text-decoration: none; }
   }
   .streamer-row > .status-badge { grid-area: status; }
   .streamer-row > .streamer-info { grid-area: info; }
-  .streamer-row > .quality-badge { display: none; }
+  .streamer-row > .platform-badge { display: none; }
   .streamer-row > .row-actions { grid-area: actions; justify-self: end; }
   .log-viewer { max-height: 260px; }
 }
@@ -546,6 +546,7 @@ a { color: inherit; text-decoration: none; }
     </div>
 
     <div class="topbar-spacer"></div>
+    <a href="/danmaku" class="pulse-live" title="搜索弹幕并定位录像时间">⌕ 弹幕检索</a>
 
     <div class="pulse-live" v-if="status.recording_count > 0">
       <span class="pulse-dot"></span>
@@ -695,7 +696,7 @@ a { color: inherit; text-decoration: none; }
                   距上次直播 {{ formatElapsed(s.last_live_elapsed_seconds) }}
                 </div>
               </div>
-              <span class="quality-badge">{{ s.platform_name ? s.platform_name + ' · ' : '' }}{{ s.quality }}</span>
+              <span class="platform-badge">{{ s.platform_name || '直播' }}</span>
               <div class="row-actions">
                 <a class="btn-icon" :href="normalizedUrl(s.url)" target="_blank" rel="noopener" title="跳转到直播间">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
@@ -757,24 +758,17 @@ a { color: inherit; text-decoration: none; }
       <div class="modal-body">
         <div class="field">
           <label>直播间链接</label>
-          <input v-model="newStreamer.url" ref="urlInput" placeholder="粘贴抖音或小红书直播链接" @keyup.enter="addStreamer">
-          <div class="hint">支持抖音直播链接、小红书 livestream 直链和 xhslink.com 分享短链</div>
-        </div>
-        <div class="field">
-          <label>画质</label>
-          <select v-model="newStreamer.quality">
-            <option>原画</option><option>蓝光</option><option>超清</option>
-            <option>高清</option><option>标清</option><option>流畅</option>
-          </select>
+          <input v-model="newStreamer.url" ref="urlInput" maxlength="2048" placeholder="填写直播间 ID 或粘贴完整链接" @paste="pasteStreamerUrl" @keyup.enter="addStreamer">
+          <div class="hint">在默认前缀后填写直播间 ID；粘贴完整链接会自动替换。支持抖音、小红书直播链接，统一录制最高可用画质。</div>
         </div>
         <div class="field">
           <label>备注名称 <span style="color: var(--text-subtle); font-weight: 400;">(可选)</span></label>
-          <input v-model="newStreamer.name" placeholder="留空时会自动抓取主播昵称" @keyup.enter="addStreamer">
+          <input v-model="newStreamer.name" maxlength="200" placeholder="留空时会自动抓取主播昵称" @keyup.enter="addStreamer">
         </div>
       </div>
       <div class="modal-foot">
         <button class="btn btn-ghost" @click="closeAdd">取消</button>
-        <button class="btn btn-primary" @click="addStreamer" :disabled="!newStreamer.url.trim() || adding">
+        <button class="btn btn-primary" @click="addStreamer" :disabled="!canAddStreamer || adding">
           {{ adding ? '添加中…' : '添加' }}
         </button>
       </div>
@@ -797,6 +791,7 @@ const { createApp, ref, reactive, computed, onMounted, onUnmounted, nextTick } =
 createApp({
   setup() {
     const THEME_KEY = 'dlr-theme';
+    const DEFAULT_STREAMER_URL = 'https://live.douyin.com/';
 
     const status = reactive({ monitoring: 0, recording_count: 0, error_count: 0, cpu_percent: 0, disk_free_gb: 0, recordings: [] });
     const streamers = ref([]);
@@ -805,7 +800,11 @@ createApp({
     const logViewer = ref(null);
     const showAdd = ref(false);
     const adding = ref(false);
-    const newStreamer = reactive({ url: '', quality: '原画', name: '' });
+    const newStreamer = reactive({ url: DEFAULT_STREAMER_URL, name: '' });
+    const canAddStreamer = computed(() => {
+      const url = newStreamer.url.trim();
+      return !!url && !/^https?:\/\/live\.douyin\.com\/?$/i.test(url);
+    });
     const toast = reactive({ show: false, msg: '', type: 'success' });
     const search = ref('');
     const tab = ref('all');
@@ -1021,7 +1020,22 @@ createApp({
       return streamers.value.filter(s => matchTab(s, t)).length;
     }
 
+    function pasteStreamerUrl(event) {
+      const text = event.clipboardData?.getData('text')?.trim() || '';
+      if (/^https?:\/\//i.test(text)) {
+        event.preventDefault();
+        newStreamer.url = text;
+      }
+    }
+
+    function apiError(data, fallback) {
+      if (data.error) return data.error;
+      if (Array.isArray(data.detail)) return data.detail.map(item => item.msg).join('；');
+      return typeof data.detail === 'string' ? data.detail : fallback;
+    }
+
     async function openAdd() {
+      if (!newStreamer.url.trim()) newStreamer.url = DEFAULT_STREAMER_URL;
       showAdd.value = true;
       await nextTick();
       const el = urlInput.value;
@@ -1036,7 +1050,7 @@ createApp({
     }
 
     async function addStreamer() {
-      if (!newStreamer.url.trim() || adding.value) return;
+      if (!canAddStreamer.value || adding.value) return;
       adding.value = true;
       try {
         const r = await fetch('/api/streamers', {
@@ -1044,19 +1058,18 @@ createApp({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             url: newStreamer.url.trim(),
-            quality: newStreamer.quality,
             name: newStreamer.name.trim(),
           }),
         });
         const d = await r.json();
         if (d.ok) {
           showToast('已添加');
-          newStreamer.url = '';
+          newStreamer.url = DEFAULT_STREAMER_URL;
           newStreamer.name = '';
           closeAdd();
           fetchStreamers();
         } else {
-          showToast(d.error || '添加失败', 'error');
+          showToast(apiError(d, '添加失败'), 'error');
         }
       } catch { showToast('网络错误', 'error'); }
       finally { adding.value = false; }
@@ -1075,7 +1088,7 @@ createApp({
           showToast('已删除');
           fetchStreamers();
         } else {
-          showToast(d.error || '删除失败', 'error');
+          showToast(apiError(d, '删除失败'), 'error');
         }
       } catch { showToast('网络错误', 'error'); }
     }
@@ -1092,7 +1105,7 @@ createApp({
           showToast(s.paused ? '已恢复监控' : '已暂停');
           fetchStreamers();
         } else {
-          showToast(d.error || '操作失败', 'error');
+          showToast(apiError(d, '操作失败'), 'error');
         }
       } catch { showToast('网络错误', 'error'); }
     }
@@ -1108,7 +1121,7 @@ createApp({
 
     return {
       status, streamers, logs, autoScroll, logViewer,
-      showAdd, adding, newStreamer, toast,
+      showAdd, adding, newStreamer, canAddStreamer, pasteStreamerUrl, toast,
       search, tab, tabs, inactiveFilterDays, sortMode, theme, urlInput,
       filteredStreamers, countByTab,
       statusClass, statusLabel,

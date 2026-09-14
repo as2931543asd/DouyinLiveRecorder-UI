@@ -1,98 +1,181 @@
 # -*- encoding: utf-8 -*-
-"""config/config.ini 的读取与缓存。
-
-`Settings` 是一个**可重载**的配置快照：`reload()` 会重新读取 ini 文件并把
-字段覆盖到 self 上，因此线程只要持有同一个 `Settings` 实例，就能实时看
-到最新值——与原先基于 module-level 全局变量的语义保持一致。
-"""
-
+"""仅在 config.ini 变化时重载；校验成功后整体发布，错误时保留上一份配置。"""
 from __future__ import annotations
 
 import configparser
+import io
+import math
+from pathlib import Path
 from typing import Any
+
+from .logger import logger
+from .utils import atomic_write_text
 
 text_encoding = "utf-8-sig"
 options = {"是": True, "否": False}
-
 VIDEO_SAVE_TYPES = ("FLV", "MKV", "TS", "MP4")
+# 仅为兼容旧版 URL_config.ini 的画质列；实际录制固定请求原画。
 QUALITY_CHOICES = ("原画", "蓝光", "超清", "高清", "标清", "流畅")
 
 
 class Settings:
     def __init__(self, config_file: str) -> None:
         self.config_file = config_file
-        self._parser = configparser.RawConfigParser()
+        self._values: dict[str, Any] | None = None
+        self._last_signature: tuple | None = None
+        self._rejected_signature: tuple | None = None
+        self._last_error: str | None = None
         self.reload()
 
-    # -- 内部 ----------------------------------------------------------------
-    def _get(self, section: str, option: str, default: Any) -> Any:
-        try:
-            self._parser.read(self.config_file, encoding=text_encoding)
-            if "录制设置" not in self._parser.sections():
-                self._parser.add_section("录制设置")
-            if "Cookie" not in self._parser.sections():
-                self._parser.add_section("Cookie")
-            return self._parser.get(section, option)
-        except (configparser.NoSectionError, configparser.NoOptionError):
-            self._parser.set(section, option, str(default))
-            with open(self.config_file, "w", encoding=text_encoding) as f:
-                self._parser.write(f)
-            return default
+    def __getattr__(self, name: str) -> Any:
+        values = self.__dict__.get("_values")
+        if values is not None and name in values:
+            return values[name]
+        raise AttributeError(name)
 
     @staticmethod
-    def _bool(raw: Any, default: bool) -> bool:
-        return options.get(raw, default)
+    def _signature(path: Path) -> tuple:
+        stat = path.stat()
+        return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
 
-    # -- 公共 ----------------------------------------------------------------
-    def reload(self) -> None:
-        g = self._get
+    @staticmethod
+    def _parse(parser: configparser.RawConfigParser) -> dict[str, Any]:
+        for section in ("录制设置", "Cookie"):
+            if not parser.has_section(section):
+                parser.add_section(section)
 
-        self.video_save_path = g("录制设置", "直播保存路径(不填则默认)", "")
-        self.folder_by_author = self._bool(g("录制设置", "保存文件夹是否以作者区分", "是"), False)
-        self.folder_by_time = self._bool(g("录制设置", "保存文件夹是否以时间区分", "否"), False)
-        self.folder_by_title = self._bool(g("录制设置", "保存文件夹是否以标题区分", "否"), False)
-        self.filename_by_title = self._bool(g("录制设置", "保存文件名是否包含标题", "否"), False)
-        self.clean_emoji = self._bool(g("录制设置", "是否去除名称中的表情符号", "是"), True)
-        self.record_danmaku = self._bool(g("录制设置", "是否录制弹幕", "否"), False)
-        self.danmaku_service_url = str(
-            g("录制设置", "弹幕服务地址", "ws://127.0.0.1:1088")
-        ).strip() or "ws://127.0.0.1:1088"
+        def get(option: str, default: Any, section: str = "录制设置") -> str:
+            if not parser.has_option(section, option):
+                parser.set(section, option, str(default))
+            return parser.get(section, option).strip()
 
-        raw_save_type = g("录制设置", "视频保存格式ts|mkv|flv|mp4", "ts")
-        self.video_save_type = (
-            raw_save_type.upper()
-            if raw_save_type and raw_save_type.upper() in VIDEO_SAVE_TYPES
-            else "TS"
-        )
+        def boolean(option: str, default: str) -> bool:
+            raw = get(option, default)
+            if raw not in options:
+                raise ValueError(f"[录制设置] {option} 必须填写“是”或“否”")
+            return options[raw]
 
-        self.video_record_quality = g("录制设置", "原画|超清|高清|标清|流畅", "原画")
-        self.use_proxy = self._bool(g("录制设置", "是否使用代理ip(是/否)", "是"), False)
-        proxy_addr_bak = g("录制设置", "代理地址", "")
-        self.proxy_addr = None if not self.use_proxy else proxy_addr_bak
+        def integer(option: str, default: int, minimum: int = 1) -> int:
+            try:
+                value = int(get(option, default))
+            except ValueError:
+                raise ValueError(f"[录制设置] {option} 必须是整数（不带单位）") from None
+            if value < minimum:
+                raise ValueError(f"[录制设置] {option} 不能小于 {minimum}")
+            return value
 
-        self.max_request = int(g("录制设置", "同一时间访问网络的线程数", 3))
-        self.delay_default = int(g("录制设置", "循环时间(秒)", 120))
-        self.local_delay_default = int(g("录制设置", "排队读取网址时间(秒)", 0))
-        self.startup_stagger_delay = int(g("录制设置", "首次启动排队读取网址时间(秒)", 3))
-        self.startup_stagger_jitter = int(g("录制设置", "首次启动随机抖动时间(秒)", 2))
-        self.loop_time = self._bool(g("录制设置", "是否显示循环秒数", "否"), False)
-        self.show_url = self._bool(g("录制设置", "是否显示直播源地址", "否"), False)
-        self.disk_space_limit = float(g("录制设置", "录制空间剩余阈值(gb)", 1.0))
-        self.converts_to_mp4 = self._bool(g("录制设置", "录制完成后自动转为mp4格式", "否"), False)
-        self.converts_to_h264 = self._bool(g("录制设置", "mp4格式重新编码为h264", "否"), False)
-        self.delete_origin_file = self._bool(g("录制设置", "追加格式后删除原文件", "否"), False)
-        self.split_video_by_time = self._bool(g("录制设置", "分段录制是否开启", "否"), False)
-        self.split_time = str(g("录制设置", "视频分段时间(秒)", 1800))
-        self.auto_restart_on_corrupt = self._bool(g("录制设置", "自动检测花屏并重录", "是"), True)
-        self.corrupt_error_threshold = int(g("录制设置", "花屏检测错误阈值", 8))
-        self.corrupt_error_window_seconds = int(g("录制设置", "花屏检测时间窗口(秒)", 20))
-        self.corrupt_restart_delay = int(g("录制设置", "花屏重录冷却时间(秒)", 3))
-        self.corrupt_probe_decode = self._bool(g("录制设置", "花屏检测是否旁路解码验证", "否"), False)
-        self.fast_reconnect_delay = int(g("录制设置", "断流首次快速重连时间(秒)", 15))
-        self.reconnect_backoff_max = int(g("录制设置", "连续断流退避上限(秒)", 120))
-        self.fetch_backoff_max = int(g("录制设置", "连续抓取失败退避上限(秒)", 300))
-        self.stable_record_reset_seconds = int(
-            g("录制设置", "稳定录制后重置退避时间(秒)", 300)
-        )
-        self.dy_cookie = g("Cookie", "抖音cookie", "")
-        self.xhs_cookie = g("Cookie", "小红书cookie", "")
+        def number(option: str, default: float) -> float:
+            try:
+                value = float(get(option, default))
+            except ValueError:
+                raise ValueError(f"[录制设置] {option} 必须是数字（不带单位）") from None
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"[录制设置] {option} 必须是有限的非负数")
+            return value
+
+        save_type = get("视频保存格式ts|mkv|flv|mp4", "ts").upper()
+        if save_type not in VIDEO_SAVE_TYPES:
+            raise ValueError("[录制设置] 视频保存格式必须是 TS、MKV、FLV 或 MP4")
+        use_proxy = boolean("是否使用代理ip(是/否)", "是")
+        proxy_addr = get("代理地址", "")
+        return {
+            "video_save_path": get("直播保存路径(不填则默认)", ""),
+            "folder_by_author": boolean("保存文件夹是否以作者区分", "是"),
+            "folder_by_time": boolean("保存文件夹是否以时间区分", "否"),
+            "folder_by_title": boolean("保存文件夹是否以标题区分", "否"),
+            "filename_by_title": boolean("保存文件名是否包含标题", "否"),
+            "clean_emoji": boolean("是否去除名称中的表情符号", "是"),
+            "record_danmaku": boolean("是否录制弹幕", "否"),
+            "danmaku_service_url": get("弹幕服务地址", "ws://127.0.0.1:1088") or "ws://127.0.0.1:1088",
+            "video_save_type": save_type,
+            # 不再读取或生成画质配置项，旧配置中的低画质也不再生效。
+            "video_record_quality": "原画",
+            "use_proxy": use_proxy,
+            "proxy_addr": (proxy_addr or None) if use_proxy else None,
+            "max_request": integer("同一时间访问网络的线程数", 3),
+            "delay_default": integer("循环时间(秒)", 120),
+            "local_delay_default": integer("排队读取网址时间(秒)", 0, 0),
+            "startup_stagger_delay": integer("首次启动排队读取网址时间(秒)", 3, 0),
+            "startup_stagger_jitter": integer("首次启动随机抖动时间(秒)", 2, 0),
+            "loop_time": boolean("是否显示循环秒数", "否"),
+            "show_url": boolean("是否显示直播源地址", "否"),
+            "disk_space_limit": number("录制空间剩余阈值(gb)", 1.0),
+            "converts_to_mp4": boolean("录制完成后自动转为mp4格式", "否"),
+            "converts_to_h264": boolean("mp4格式重新编码为h264", "否"),
+            "delete_origin_file": boolean("追加格式后删除原文件", "否"),
+            "split_video_by_time": boolean("分段录制是否开启", "否"),
+            "split_time": str(integer("视频分段时间(秒)", 1800)),
+            "auto_restart_on_corrupt": boolean("自动检测花屏并重录", "是"),
+            "corrupt_error_threshold": integer("花屏检测错误阈值", 8),
+            "corrupt_error_window_seconds": integer("花屏检测时间窗口(秒)", 20),
+            "corrupt_restart_delay": integer("花屏重录冷却时间(秒)", 3, 0),
+            "corrupt_probe_decode": boolean("花屏检测是否旁路解码验证", "否"),
+            "fast_reconnect_delay": integer("断流首次快速重连时间(秒)", 15),
+            "reconnect_backoff_max": integer("连续断流退避上限(秒)", 120),
+            "fetch_backoff_max": integer("连续抓取失败退避上限(秒)", 300),
+            "stable_record_reset_seconds": integer("稳定录制后重置退避时间(秒)", 300),
+            "dy_cookie": get("抖音cookie", "", "Cookie"),
+            "xhs_cookie": get("小红书cookie", "", "Cookie"),
+        }
+
+    def reload(self) -> bool:
+        """成功发布新快照返回 True；未变化或无效的热更新返回 False。
+
+        首次启动没有可回退的快照，错误时明确拒绝启动，绝不猜测保存目录。
+        运行期间不会回写用户配置；仅首次启动遇到空/不存在文件时生成模板。
+        """
+        path = Path(self.config_file)
+        try:
+            try:
+                signature = self._signature(path)
+            except FileNotFoundError:
+                if self._values is not None:
+                    raise
+                signature = None
+            if self._values is not None and signature in (
+                self._last_signature, self._rejected_signature,
+            ):
+                return False
+            content = path.read_text(encoding=text_encoding) if signature is not None else ""
+            if signature is not None and self._signature(path) != signature:
+                raise OSError("读取期间配置发生变化")
+            if self._values is not None and not content.strip():
+                raise ValueError("配置文件为空，可能尚未保存完成")
+            parser = configparser.RawConfigParser()
+            parser.read_string(content)
+            values = self._parse(parser)
+            if signature is not None and self._signature(path) != signature:
+                raise OSError("校验期间配置发生变化")
+            if self._values is None and not content.strip():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                buffer = io.StringIO()
+                parser.write(buffer)
+                atomic_write_text(path, buffer.getvalue(), encoding=text_encoding)
+                signature = self._signature(path)
+        except (OSError, UnicodeError, configparser.Error, ValueError) as exc:
+            if isinstance(exc, configparser.Error):
+                # ConfigParser 的异常可能包含原始行（包括 Cookie），日志只报告类型/行号。
+                reason = f"INI 格式错误：{type(exc).__name__}"
+                if getattr(exc, "lineno", None):
+                    reason += f"（第 {exc.lineno} 行）"
+            elif isinstance(exc, (OSError, UnicodeError)):
+                reason = f"配置无法完整读取或保存：{type(exc).__name__}"
+            else:
+                reason = str(exc)
+            if self._values is None:
+                raise ValueError(f"配置无效，未启动录制：{reason}") from None
+            if isinstance(exc, (configparser.Error, ValueError)) and not isinstance(exc, UnicodeError):
+                self._rejected_signature = signature
+            if reason != self._last_error:
+                logger.error(f"配置更新未生效，继续使用上一份有效配置：{reason}")
+                self._last_error = reason
+            return False
+
+        # 不逐字段覆盖活动对象：其他线程不会看到校验一半的新配置。
+        self._values = values
+        self._last_signature = signature
+        self._rejected_signature = None
+        if self._last_error:
+            logger.info("配置已修正，热更新成功")
+        self._last_error = None
+        return True

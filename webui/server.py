@@ -21,15 +21,17 @@ from urllib.parse import urlsplit, urlunsplit
 import psutil
 import uvicorn
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
-from src import live_history, platforms, runtime
+from src import live_history, platforms, runtime, url_config, utils
 from src.config_loader import text_encoding
 from src.logger import get_recent_logs
+from webui import danmaku_api
 
 app = FastAPI()
+app.include_router(danmaku_api.router)
 
 static_dir = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -71,6 +73,11 @@ def init(url_config_file: str, disk_sample_path: str | None = None) -> None:
     _url_config_file = url_config_file
     if disk_sample_path:
         _disk_sample_path = disk_sample_path
+    recording_root = (
+        Path(disk_sample_path) if disk_sample_path
+        else Path(url_config_file).resolve().parent.parent / "downloads"
+    )
+    danmaku_api.configure(recording_root)
     if not _stats_thread_started:
         _stats_thread_started = True
         threading.Thread(target=_stats_sampler_loop, daemon=True).start()
@@ -78,14 +85,45 @@ def init(url_config_file: str, disk_sample_path: str | None = None) -> None:
 
 # ---------- Models ----------------------------------------------------------
 
-class StreamerAdd(BaseModel):
-    url: str
-    quality: str = "原画"
-    name: str = ""
+_UNSAFE_CONFIG_CHARS = re.compile(r"[\x00-\x1f\x7f,，\u0085\u2028\u2029]")
 
 
 class StreamerAction(BaseModel):
-    url: str
+    url: str = Field(min_length=1, max_length=2048)
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value: str) -> str:
+        if _UNSAFE_CONFIG_CHARS.search(value):
+            raise ValueError("链接不能包含控制字符或配置分隔符")
+        value = value.strip()
+        if not value or any(char.isspace() for char in value):
+            raise ValueError("请填写完整直播间链接，链接中不能包含空白")
+        normalized = platforms.normalize_supported_url(value)
+        if normalized is None:
+            raise ValueError("仅支持抖音直播链接、小红书直播间或分享短链")
+        return value
+
+
+class StreamerAdd(StreamerAction):
+    # 旧版 WebUI/QQ 插件的 quality 作为额外字段忽略，不再允许选择低画质。
+    name: str = Field(default="", max_length=200)
+
+    @field_validator("url")
+    @classmethod
+    def require_room_path(cls, value: str) -> str:
+        # 只限制新增，旧版误加入的纯域名仍可通过暂停/删除清理。
+        normalized = platforms.normalize_supported_url(value)
+        if not urlsplit(normalized).path.strip("/"):
+            raise ValueError("请填写完整直播间链接，不能只有域名前缀")
+        return value
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if _UNSAFE_CONFIG_CHARS.search(value):
+            raise ValueError("名称不能包含换行、控制字符或中英文逗号")
+        return value.strip()
 
 
 def _normalize_streamer_url(url: str) -> str:
@@ -96,7 +134,10 @@ def _normalize_streamer_url(url: str) -> str:
     if "://" not in value:
         value = "https://" + value
 
-    parsed = urlsplit(value)
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return ""
     if not parsed.netloc:
         return ""
 
@@ -105,32 +146,8 @@ def _normalize_streamer_url(url: str) -> str:
 
 
 def _parse_streamer_line(line: str) -> tuple[bool, str, str, str] | None:
-    """解析一行主播配置，返回 (是否暂停, 画质, URL, 名称)。"""
-    stripped = line.strip()
-    if len(stripped) < 18:
-        return None
-
-    paused = stripped.startswith("#")
-    if paused:
-        stripped = stripped.lstrip("#").strip()
-
-    parts = re.split("[,，]", stripped)
-    if len(parts) < 2:
-        return None
-
-    if re.search(r"https?://", parts[0]):
-        quality = "原画"
-        url = parts[0]
-        name = parts[1] if len(parts) > 1 else ""
-    else:
-        quality = parts[0]
-        url = parts[1] if len(parts) > 1 else ""
-        name = parts[2] if len(parts) > 2 else ""
-
-    url = url.strip()
-    if not _normalize_streamer_url(url):
-        return None
-    return paused, quality, url, name
+    """WebUI 与录制调度使用同一解析规则，也能展示尚未规范化的单 URL 行。"""
+    return url_config.parse_streamer_line(line)
 
 
 def _toggle_line_comment(line: str, currently_paused: bool) -> str:
@@ -149,7 +166,19 @@ async def index():
     return FileResponse(str(static_dir / "index.html"))
 
 
+@app.get("/danmaku")
+async def danmaku_page():
+    return FileResponse(str(static_dir / "danmaku.html"))
+
+
 # ---------- API -------------------------------------------------------------
+
+@app.exception_handler(OSError)
+@app.exception_handler(UnicodeError)
+async def config_io_error(_request, _exc):
+    return JSONResponse(status_code=503, content={
+        "ok": False, "error": "配置文件读写失败，请检查权限、编码和磁盘空间",
+    })
 
 @app.get("/api/status")
 async def get_status():
@@ -205,19 +234,22 @@ async def add_streamer(data: StreamerAdd):
         }
 
     normalized_url = _normalize_streamer_url(url)
-    for s in _parse_url_config():
-        if _normalize_streamer_url(s["url"]) == normalized_url:
-            return {"ok": False, "error": "该链接已存在"}
-
-    line = f"{data.quality},{url}"
-    if data.name:
-        line += f",{data.name}"
-    line += "\n"
-
+    line = f"原画,{url}" + (f",{data.name}" if data.name else "") + "\n"
     with runtime.file_update_lock:
-        with open(_url_config_file, "a", encoding=text_encoding) as f:
-            f.write(line)
-    live_history.initialize_missing([url])
+        path = Path(_url_config_file)
+        try:
+            content = path.read_text(encoding=text_encoding)
+        except FileNotFoundError:
+            content = ""
+        # 查重与提交同属一个事务，多个客户端同时添加也只会成功一次。
+        for existing in content.splitlines():
+            parsed = _parse_streamer_line(existing)
+            if parsed and _normalize_streamer_url(parsed[2]) == normalized_url:
+                return {"ok": False, "error": "该链接已存在"}
+        if content and not content.endswith("\n"):
+            content += "\n"
+        utils.atomic_write_text(path, content + line, encoding=text_encoding)
+        live_history.initialize_missing([url])
 
     return {"ok": True}
 
@@ -239,7 +271,7 @@ async def toggle_streamer(data: StreamerAction):
     paused_after_toggle = False
     matched_url = ""
     with runtime.file_update_lock:
-        with open(_url_config_file, "r", encoding=text_encoding, errors="ignore") as f:
+        with open(_url_config_file, "r", encoding=text_encoding) as f:
             lines = f.readlines()
 
         new_lines: list[str] = []
@@ -262,16 +294,13 @@ async def toggle_streamer(data: StreamerAction):
             else:
                 new_lines.append(line)
 
-        with open(_url_config_file, "w", encoding=text_encoding) as f:
-            f.writelines(new_lines)
-
-    if not toggled:
-        return {"ok": False, "error": "未找到完全匹配的主播链接"}
-
-    if paused_after_toggle:
-        _request_stop_url(matched_url)
-    else:
-        _clear_stop_url(matched_url)
+        if not toggled:
+            return {"ok": False, "error": "未找到完全匹配的主播链接"}
+        utils.atomic_write_text(_url_config_file, "".join(new_lines), encoding=text_encoding)
+        if paused_after_toggle:
+            _request_stop_url(matched_url)
+        else:
+            _clear_stop_url(matched_url)
 
     return {"ok": True}
 
@@ -292,7 +321,7 @@ def _parse_url_config() -> list[dict]:
             if len(entry) >= 3 and entry[2]
         }
     try:
-        with open(_url_config_file, "r", encoding=text_encoding, errors="ignore") as f:
+        with runtime.file_update_lock, open(_url_config_file, "r", encoding=text_encoding) as f:
             for line in f:
                 parsed = _parse_streamer_line(line)
                 if parsed is None:
@@ -354,7 +383,7 @@ def _delete_url_line(url: str) -> bool:
 
     matched_url = ""
     with runtime.file_update_lock:
-        with open(_url_config_file, "r", encoding=text_encoding, errors="ignore") as f:
+        with open(_url_config_file, "r", encoding=text_encoding) as f:
             lines = f.readlines()
 
         kept_lines: list[str] = []
@@ -372,17 +401,15 @@ def _delete_url_line(url: str) -> bool:
         if not matched_url:
             return False
 
-        with open(_url_config_file, "w", encoding=text_encoding) as f:
-            f.writelines(kept_lines)
-
-    _request_stop_url(matched_url)
-    for candidate in {matched_url, target_url}:
-        live_history.remove(candidate)
-    with runtime.state_lock:
+        utils.atomic_write_text(_url_config_file, "".join(kept_lines), encoding=text_encoding)
+        _request_stop_url(matched_url)
         for candidate in {matched_url, target_url}:
-            runtime.current_anchor_names.pop(candidate, None)
-            runtime.pending_name_updates.pop(candidate, None)
-            runtime.live_urls.discard(candidate)
+            live_history.remove(candidate)
+        with runtime.state_lock:
+            for candidate in {matched_url, target_url}:
+                runtime.current_anchor_names.pop(candidate, None)
+                runtime.pending_name_updates.pop(candidate, None)
+                runtime.live_urls.discard(candidate)
     return True
 
 

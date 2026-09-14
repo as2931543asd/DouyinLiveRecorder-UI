@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>弹幕检索 · 直播录制</title>
+  <link rel="stylesheet" href="/static/danmaku.css">
+  <script src="/static/danmaku.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/"><span class="logo">录</span><span>直播录制<small>Live Recording Dashboard</small></span></a>
+  <nav aria-label="主导航"><a href="/">控制面板</a><a class="active" href="/danmaku" aria-current="page">弹幕检索</a></nav>
+</header>
+<main>
+  <section class="intro">
+    <div><span class="eyebrow">DANMAKU ARCHIVE</span><h1>从一句弹幕，找回直播现场。</h1><p>搜索发言、缩小时间范围，定位到对应录像与片内时间。</p></div>
+    <button id="refresh" class="secondary" type="button">↻ 刷新弹幕索引</button>
+  </section>
+  <section class="stats" aria-label="索引信息">
+    <div><small>已索引弹幕</small><strong id="chat-count">—</strong></div>
+    <div><small>弹幕文件</small><strong id="file-count">—</strong></div>
+    <div class="updated"><small>最近更新</small><strong id="updated-at">尚未加载</strong></div>
+  </section>
+  <p id="index-message" class="notice" role="status" aria-live="polite">正在读取索引状态…</p>
+  <div class="workspace">
+    <aside class="filters panel">
+      <h2>检索条件</h2><p class="muted">关键词可留空，按主播或时间浏览。</p>
+      <form id="search-form">
+        <label for="q">关键词</label><input id="q" name="q" type="search" maxlength="500" placeholder="输入弹幕、主播或发言者" autocomplete="off">
+        <p class="hint">多个词用空格分隔，不区分英文大小写。</p>
+        <div class="form-grid">
+          <div><label for="scope">搜索范围</label><select id="scope" name="scope"><option value="both">弹幕 + 主播</option><option value="content">弹幕正文</option><option value="anchor">主播名称</option><option value="viewer">发言者 / ID</option><option value="all">全部字段</option></select></div>
+          <div><label for="match">关键词关系</label><select id="match" name="match"><option value="any">任意一个</option><option value="all">全部包含</option></select></div>
+        </div>
+        <label for="anchor">只看这位主播</label><input id="anchor" name="anchor" maxlength="200" placeholder="主播名，支持部分匹配">
+        <label for="viewer">发言者</label><input id="viewer" name="viewer" maxlength="200" placeholder="昵称或用户 ID">
+        <div class="divider"></div>
+        <label for="since">开始时间（包含）</label><input id="since" name="since" type="datetime-local" step="0.001">
+        <label for="until">结束时间（包含）</label><input id="until" name="until" type="datetime-local" step="0.001">
+        <p id="timezone" class="hint"></p>
+        <div class="form-grid">
+          <div><label for="order">时间排序</label><select id="order" name="order"><option value="desc">最新在前</option><option value="asc">最早在前</option></select></div>
+          <div><label for="page_size">每页条数</label><select id="page_size" name="page_size"><option>20</option><option selected>50</option><option>100</option></select></div>
+        </div>
+        <button id="search-button" class="primary wide" type="submit">搜索弹幕</button>
+        <button class="text-button wide" type="reset">清空条件</button>
+      </form>
+      <details class="help"><summary>视频时间如何定位？</summary><p>新录制优先使用 FFmpeg 的实际分段时间表。历史录像按真实视频时长累计估算，不按“每小时一段”猜测。</p><p>缺失分段、未完成尾段或无法探测时会明确提示。弹幕接收与视频流存在延迟，片内时间不保证逐帧同步。</p></details>
+      <p id="root" class="hint path"></p>
+    </aside>
+    <section class="results panel" aria-labelledby="results-heading">
+      <div class="results-head"><div><h2 id="results-heading">搜索结果 <span id="total" class="pill">0</span></h2><p id="result-description" class="muted">输入条件，或直接浏览最近的弹幕。</p></div><span class="pill subtle">毫秒时间 · 来源可追溯</span></div>
+      <div id="search-message" class="empty" role="status" aria-live="polite">正在准备检索…</div>
+      <div id="results" aria-busy="false"></div>
+      <div class="pagination"><button id="prev" class="secondary" disabled>← 上一页</button><span id="page-info">第 1 页</span><button id="next" class="secondary" disabled>下一页 →</button></div>
+    </section>
+  </div>
+</main>
+<dialog id="video-dialog" aria-labelledby="video-title">
+  <div class="dialog-head"><div><span class="eyebrow">RECORDING LOCATOR</span><h2 id="video-title">视频定位</h2></div><button id="close-dialog" class="secondary" aria-label="关闭视频定位">关闭 ✕</button></div>
+  <div id="locate-message" class="notice" role="status"></div>
+  <div id="video-detail" hidden>
+    <p id="selected-chat" class="quote"></p>
+    <div class="location"><span id="location-badge" class="pill"></span><strong id="video-offset"></strong></div>
+    <p id="video-path" class="path filename"></p>
+    <video id="player" controls preload="metadata" playsinline></video>
+    <p id="player-message" class="hint" role="status"></p>
+    <div class="actions"><button id="seek" class="primary">跳转到弹幕时间</button><button id="preroll" class="secondary">提前 5 秒</button><button id="copy-path" class="secondary">复制完整路径</button><a id="download" class="secondary">下载视频</a></div>
+    <p class="hint">TS / FLV / 部分 MKV 或 HEVC 视频可能无法在浏览器播放，可下载后用本地播放器打开。</p>
+    <p id="timing-note" class="notice"></p>
+  </div>
+  <ul id="candidates" class="path"></ul>
+</dialog>
+</body>
+</html>
