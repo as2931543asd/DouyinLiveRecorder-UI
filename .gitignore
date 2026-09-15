@@ -87,6 +87,7 @@ logs/
 config/config.ini
 config/URL_config.ini
 config/live_history.json
+config/special_monitor.json
 
 # Track .python-version to keep the application's Python version explicit.
 
@@ -165,6 +166,7 @@ cython_debug/
 backup_config/
 
 # Local agent / assistant files
+/PLAN.md
 AGENTS.md
 claude.md
 CLAUDE.md

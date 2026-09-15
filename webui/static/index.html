@@ -682,6 +682,7 @@ a { color: inherit; text-decoration: none; }
               </span>
               <div class="streamer-info">
                 <div class="streamer-name">
+                  <span v-if="s.special_monitor" style="color: var(--warning)" title="特别监控：开播时发送通知">★</span>
                   <span v-if="s.name">{{ s.name }}</span>
                   <span v-else class="streamer-name-empty">未命名主播</span>
                   <span v-if="s.is_recording && !s.paused && recDurationOf(s.url)"
@@ -698,6 +699,12 @@ a { color: inherit; text-decoration: none; }
               </div>
               <span class="platform-badge">{{ s.platform_name || '直播' }}</span>
               <div class="row-actions">
+                <button v-if="typeof s.special_monitor === 'boolean'" class="btn-icon" @click="toggleSpecialMonitor(s)"
+                        :disabled="specialBusy.includes(s.url)" :aria-pressed="!!s.special_monitor"
+                        :style="s.special_monitor ? { color: 'var(--warning)' } : {}"
+                        :title="s.special_monitor ? '取消特别监控' : '特别监控：开播通知'">
+                  <span aria-hidden="true" style="font-size: 20px">{{ s.special_monitor ? '★' : '☆' }}</span>
+                </button>
                 <a class="btn-icon" :href="normalizedUrl(s.url)" target="_blank" rel="noopener" title="跳转到直播间">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
                 </a>
@@ -795,6 +802,7 @@ createApp({
 
     const status = reactive({ monitoring: 0, recording_count: 0, error_count: 0, cpu_percent: 0, disk_free_gb: 0, recordings: [] });
     const streamers = ref([]);
+    const specialBusy = ref([]);
     const logs = ref([]);
     const autoScroll = ref(true);
     const logViewer = ref(null);
@@ -810,12 +818,14 @@ createApp({
     const tab = ref('all');
     const inactiveFilterDays = ref(0);
     const sortMode = ref('status');
-    const tabs = [
+    // 静态页可先更新；旧后端没有该字段时隐藏新入口，避免请求尚未加载的 API。
+    const tabs = computed(() => [
       { key: 'all', label: '全部' },
+      { key: 'special', label: '★ 特别监控' },
       { key: 'recording', label: '录制中' },
       { key: 'monitoring', label: '监控中' },
       { key: 'paused', label: '已暂停' },
-    ];
+    ].filter(t => t.key !== 'special' || streamers.value.some(s => typeof s.special_monitor === 'boolean')));
     const theme = ref(localStorage.getItem(THEME_KEY) || 'light');
     const urlInput = ref(null);
 
@@ -922,6 +932,7 @@ createApp({
 
     function matchTab(s, t) {
       if (t === 'all') return true;
+      if (t === 'special') return !!s.special_monitor;
       if (t === 'recording') return s.state === '录制中';
       if (t === 'monitoring') return s.state === '监控中' || s.state === '重连中';
       if (t === 'paused') return s.state === '已暂停';
@@ -1093,6 +1104,27 @@ createApp({
       } catch { showToast('网络错误', 'error'); }
     }
 
+    async function toggleSpecialMonitor(s) {
+      if (specialBusy.value.includes(s.url)) return;
+      specialBusy.value.push(s.url);
+      const enabled = !s.special_monitor;
+      try {
+        const r = await fetch('/api/streamers/special-monitor', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: s.url, enabled }),
+        });
+        const d = await r.json();
+        if (d.ok) {
+          showToast(enabled ? '已开启特别监控，开播事件将交给通知适配器（暂停时不提醒）' : '已取消特别监控');
+          await fetchStreamers();
+        } else {
+          showToast(apiError(d, '设置特别监控失败'), 'error');
+        }
+      } catch { showToast('网络错误', 'error'); }
+      finally { specialBusy.value = specialBusy.value.filter(url => url !== s.url); }
+    }
+
     async function toggleStreamer(s) {
       try {
         const r = await fetch('/api/streamers/toggle', {
@@ -1120,7 +1152,7 @@ createApp({
     onUnmounted(() => { clearInterval(statusTimer); clearInterval(slowTimer); });
 
     return {
-      status, streamers, logs, autoScroll, logViewer,
+      status, streamers, specialBusy, toggleSpecialMonitor, logs, autoScroll, logViewer,
       showAdd, adding, newStreamer, canAddStreamer, pasteStreamerUrl, toast,
       search, tab, tabs, inactiveFilterDays, sortMode, theme, urlInput,
       filteredStreamers, countByTab,

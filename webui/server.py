@@ -20,12 +20,12 @@ from urllib.parse import urlsplit, urlunsplit
 
 import psutil
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
-from src import live_history, platforms, runtime, url_config, utils
+from src import live_history, platforms, runtime, special_monitor, url_config, utils
 from src.config_loader import text_encoding
 from src.logger import get_recent_logs
 from webui import danmaku_api
@@ -71,6 +71,7 @@ def init(url_config_file: str, disk_sample_path: str | None = None) -> None:
     """由 main.py 调用，告知 ini 路径及磁盘检测目录。"""
     global _url_config_file, _disk_sample_path, _stats_thread_started
     _url_config_file = url_config_file
+    special_monitor.init(Path(url_config_file).parent / "special_monitor.json")
     if disk_sample_path:
         _disk_sample_path = disk_sample_path
     recording_root = (
@@ -103,6 +104,15 @@ class StreamerAction(BaseModel):
         if normalized is None:
             raise ValueError("仅支持抖音直播链接、小红书直播间或分享短链")
         return value
+
+
+class SpecialMonitorAction(StreamerAction):
+    enabled: bool = Field(strict=True)
+
+
+class NotificationAck(BaseModel):
+    event_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    consumer: str = Field(pattern=r"^[a-zA-Z0-9_.-]{1,64}$")
 
 
 class StreamerAdd(StreamerAction):
@@ -299,9 +309,48 @@ async def toggle_streamer(data: StreamerAction):
         utils.atomic_write_text(_url_config_file, "".join(new_lines), encoding=text_encoding)
         if paused_after_toggle:
             _request_stop_url(matched_url)
+            special_monitor.cancel_pending(matched_url)
         else:
             _clear_stop_url(matched_url)
 
+    return {"ok": True}
+
+
+@app.patch("/api/streamers/special-monitor")
+def set_special_monitor(data: SpecialMonitorAction):
+    target = _normalize_streamer_url(platforms.normalize_supported_url(data.url))
+    with runtime.file_update_lock:
+        content = Path(_url_config_file).read_text(encoding=text_encoding)
+        for line in content.splitlines():
+            parsed = _parse_streamer_line(line)
+            if parsed and _normalize_streamer_url(parsed[2]) == target:
+                paused, _, url, name = parsed
+                with runtime.state_lock:
+                    is_live = not paused and (url in runtime.live_urls or any(
+                        len(entry) >= 3 and entry[2] == url
+                        for entry in runtime.recording_time_list.values()
+                    ))
+                    name = runtime.current_anchor_names.get(url, name.replace("主播: ", ""))
+                special_monitor.set_enabled(url, data.enabled, is_live=is_live, name=name)
+                return {"ok": True}
+    return JSONResponse(status_code=404, content={"ok": False, "error": "未找到主播链接"})
+
+
+@app.get("/api/notifications/events")
+def get_notification_events(consumer: str = Query(pattern=r"^[a-zA-Z0-9_.-]{1,64}$")):
+    """通用拉取接口：消费者只领取自己的未确认事件，不包含任何渠道配置。"""
+    with runtime.file_update_lock:
+        content = Path(_url_config_file).read_text(encoding=text_encoding)
+        active_urls = {
+            parsed[2] for line in content.splitlines()
+            if (parsed := _parse_streamer_line(line)) and not parsed[0]
+        }
+        return {"version": 1, "events": special_monitor.pending_events(active_urls, consumer)}
+
+
+@app.post("/api/notifications/ack")
+def acknowledge_notification(data: NotificationAck):
+    special_monitor.acknowledge(data.event_id, data.consumer)
     return {"ok": True}
 
 
@@ -310,6 +359,7 @@ async def toggle_streamer(data: StreamerAction):
 def _parse_url_config() -> list[dict]:
     streamers: list[dict] = []
     history_snapshot = live_history.get_snapshot()
+    special_urls = special_monitor.watched_urls()
     now = datetime.datetime.now().astimezone()
     with runtime.state_lock:
         running_snapshot = list(runtime.running_list)
@@ -362,6 +412,7 @@ def _parse_url_config() -> list[dict]:
                     "quality": quality,
                     "name": current_name_snapshot.get(url, configured_name),
                     "paused": paused,
+                    "special_monitor": url in special_urls,
                     "is_recording": is_recording and not paused,
                     "is_live": is_live,
                     "is_monitoring": is_monitoring,
@@ -403,6 +454,7 @@ def _delete_url_line(url: str) -> bool:
 
         utils.atomic_write_text(_url_config_file, "".join(kept_lines), encoding=text_encoding)
         _request_stop_url(matched_url)
+        special_monitor.set_enabled(matched_url, False)
         for candidate in {matched_url, target_url}:
             live_history.remove(candidate)
         with runtime.state_lock:

@@ -28,7 +28,7 @@ function loadPage(postResult = { ok: true }) {
     clearTimeout: () => {},
     fetch: async (url, options = {}) => {
       requests.push({ url, ...options });
-      return { json: async () => options.method === 'POST' ? postResult : [] };
+      return { json: async () => options.method === 'POST' || options.method === 'PATCH' ? postResult : [] };
     },
   };
   vm.runInNewContext(script, context, { filename: 'index.html:inline-script' });
@@ -93,6 +93,50 @@ test('successful add sends no quality and resets the prefix', async () => {
   assert.equal(page.newStreamer.url, prefix);
   assert.equal(page.newStreamer.name, '');
   assert.equal(page.canAddStreamer.value, false);
+});
+
+test('new notification controls stay hidden against the not-yet-restarted backend', () => {
+  const { page } = loadPage();
+  page.streamers.value = [{ url: prefix + '1', state: '录制中' }];
+  assert.equal(page.tabs.value.some(tab => tab.key === 'special'), false);
+  assert.match(html, /v-if="typeof s\.special_monitor === 'boolean'"/);
+  page.streamers.value[0].special_monitor = false;
+  assert.equal(page.tabs.value.some(tab => tab.key === 'special'), true);
+});
+
+test('special monitor filters independently of live or paused state', () => {
+  const { page } = loadPage();
+  page.streamers.value = [
+    { url: prefix + '1', special_monitor: true, state: '已暂停' },
+    { url: prefix + '2', special_monitor: false, state: '录制中' },
+  ];
+  page.tab.value = 'special';
+  assert.equal(page.filteredStreamers.value.length, 1);
+  assert.equal(page.countByTab('special'), 1);
+  assert.equal(page.filteredStreamers.value[0].url, prefix + '1');
+});
+
+test('special monitor uses a channel-neutral explicit setter and blocks double clicks', async () => {
+  const { page, requests } = loadPage();
+  const streamer = { url: prefix + '1', special_monitor: false };
+  const pending = page.toggleSpecialMonitor(streamer);
+  await page.toggleSpecialMonitor(streamer);
+  await pending;
+  const patches = requests.filter(request => request.method === 'PATCH');
+  assert.equal(patches.length, 1);
+  assert.equal(patches[0].url, '/api/streamers/special-monitor');
+  assert.deepEqual(JSON.parse(patches[0].body), { url: streamer.url, enabled: true });
+  assert.equal(page.specialBusy.value.length, 0);
+  assert.equal(page.toast.type, 'success');
+});
+
+test('special monitor failures are visible and never falsely flip the switch', async () => {
+  const { page } = loadPage({ ok: false, error: '保存失败' });
+  const streamer = { url: prefix + '1', special_monitor: true };
+  await page.toggleSpecialMonitor(streamer);
+  assert.equal(streamer.special_monitor, true);
+  assert.equal(page.toast.msg, '保存失败');
+  assert.equal(page.specialBusy.value.length, 0);
 });
 
 test('validation errors are visible and do not clear the entered URL', async () => {

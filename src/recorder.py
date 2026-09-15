@@ -24,7 +24,7 @@ from typing import Callable, Literal, TextIO
 RecordResult = Literal["stop", "corrupt_restart", "ended", "finished"]
 SubprocessStartedCallback = Callable[[float, float], None]
 
-from . import live_history, platforms, runtime, spider, stream, utils
+from . import live_history, platforms, runtime, special_monitor, spider, stream, utils
 from .config_loader import Settings
 from .danmaku import DanmakuRecorder, danmaku_jsonl_path, extract_room_identifier
 from .logger import logger
@@ -714,6 +714,15 @@ def start_record(
                             configured_anchor_name = anchor_name
                         with runtime.state_lock:
                             runtime.current_anchor_names[record_url] = anchor_name
+
+                        try:
+                            special_monitor.observe(
+                                record_url, bool(port_info.get("is_live", False)),
+                                anchor_name, port_info.get("title", ""),
+                            )
+                        except OSError:
+                            # 提醒持久化失败不能打断录制；下一次成功抓取时重试。
+                            logger.error("特别监控状态保存失败，录制继续，请检查磁盘和权限")
 
                         if port_info.get("is_live", False):
                             if live_session_started_at is None:
