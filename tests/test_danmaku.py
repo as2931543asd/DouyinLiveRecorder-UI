@@ -878,13 +878,17 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual(settings.danmaku_service_url, "ws://127.0.0.1:1088")
 
             content = config_path.read_text(encoding="utf-8-sig")
-            config_path.write_text(
+            # 与实际配置保存一致地原子替换，避免同大小写入在 tmpfs 上
+            # 共用时间戳，导致热更新测试偶发地被视为文件未变化。
+            updated_path = config_path.with_suffix(".updated")
+            updated_path.write_text(
                 content.replace("是否录制弹幕 = 否", "是否录制弹幕 = 是").replace(
                     "弹幕服务地址 = ws://127.0.0.1:1088",
                     "弹幕服务地址 = ws://127.0.0.1:2088",
                 ),
                 encoding="utf-8-sig",
             )
+            updated_path.replace(config_path)
             settings.reload()
 
             self.assertTrue(settings.record_danmaku)

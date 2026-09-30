@@ -22,8 +22,8 @@ from pathlib import Path
 from typing import Iterator, Sequence
 
 
-DEFAULT_ROOT = Path("/vol1/@team/NAS/Record")
-EXCLUDED_DIRECTORY = Path("/vol1/@team/NAS/CloudDrive")
+DEFAULT_ROOT = Path("/srv/nas/Record")
+EXCLUDED_DIRECTORY = Path("/srv/nas/CloudDrive")
 DANMAKU_SUFFIX = ".danmaku.jsonl"
 PLATFORM_DIRECTORY_NAMES = {"抖音直播"}
 FILENAME_TIME_RE = re.compile(r"_(?=\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(?:_|$))")

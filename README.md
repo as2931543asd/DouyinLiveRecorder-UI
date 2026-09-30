@@ -1,5 +1,7 @@
 # DouyinLiveRecorder-UI
 
+本机线上部署：`/srv/apps/douyinlive-recorder/current`，由 `douyinlive-status.service` 管理。源码与开发环境保留在本工作空间；配置、日志、弹幕索引分别位于 `/srv/apps/douyinlive-recorder/{config,logs,data}`，视频继续保存在 `/srv/nas/Record`。修改源码需创建发布副本后切换服务，不能视为已修改线上。
+
 ## 简介
 
 `DouyinLiveRecorder-UI` 是一个支持抖音和小红书直播录制的轻量化工具，提供 Web UI 管理界面，方便统一维护录制任务、查看状态与日志。
