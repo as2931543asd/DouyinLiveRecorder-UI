@@ -205,13 +205,13 @@ UTF-8 且保留非 ASCII 文字。每写一行都会及时刷新，因此异常�
 需要兼容 Bilibili XML 的播放器或工具时，可从 JSONL 离线派生：
 
 ```bash
-python scripts/danmaku_convert.py /path/to/name.danmaku.jsonl
+uv run python scripts/danmaku_convert.py /path/to/name.danmaku.jsonl
 ```
 
 默认输出同基名 `/path/to/name.xml`。目标已存在时默认拒绝覆盖；确认要替换时：
 
 ```bash
-python scripts/danmaku_convert.py /path/to/name.danmaku.jsonl --overwrite
+uv run python scripts/danmaku_convert.py /path/to/name.danmaku.jsonl --overwrite
 ```
 
 也可用 `--output /path/to/custom.xml` 指定目标。输入与输出不能是同一个文件；即使
@@ -229,7 +229,7 @@ python scripts/danmaku_convert.py /path/to/name.danmaku.jsonl --overwrite
 异常退出留下了没有换行的不完整最后一行，可显式恢复之前的完整记录：
 
 ```bash
-python scripts/danmaku_convert.py /path/to/name.danmaku.jsonl --recover-truncated-tail
+uv run python scripts/danmaku_convert.py /path/to/name.danmaku.jsonl --recover-truncated-tail
 ```
 
 恢复模式会向 stderr 明确报警，并且只忽略“文件最后一行、没有换行、JSON 确属
