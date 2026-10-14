@@ -1,8 +1,6 @@
 # DouyinLiveRecorder-UI
 
-抖音和小红书直播录制工具，带 Web UI 管理录制任务、状态和日志。基于 [ihmily/DouyinLiveRecorder](https://github.com/ihmily/DouyinLiveRecorder) 精简改造。
-
-本机线上实例在 `/srv/apps/douyinlive-recorder/current`，由 `douyinlive-status.service` 管理；配置、日志、弹幕索引在 `/srv/apps/douyinlive-recorder/{config,logs,data}`，视频在 `/srv/nas/Record`。本目录是源码，修改后要建发布副本再切换服务。
+DouyinLiveRecorder-UI 是一个抖音和小红书直播录制工具：轮询主播是否开播，用 FFmpeg 录下直播流，并提供 Web UI 管理录制任务、状态和日志，还能同步录制抖音弹幕、按弹幕定位录像。基于 [ihmily/DouyinLiveRecorder](https://github.com/ihmily/DouyinLiveRecorder) 精简改造。
 
 ![Web UI 预览](./ui.png)
 
@@ -14,14 +12,31 @@
 - 抖音可选同步录制聊天弹幕（JSON Lines），并提供弹幕检索和录像定位页面。
 - 特别监控的主播开播时发出通知事件。
 
-## 运行
+## 安装与运行
 
-```bash
-uv sync
-uv run main.py          # Web UI：http://localhost:9527（监听 0.0.0.0）
+需要 FFmpeg（`apt install ffmpeg`；Windows 把 `ffmpeg.exe` 放进项目根目录的 `ffmpeg/`）。启动后 Web UI 在 <http://localhost:9527>，监听 0.0.0.0：
+
+```console
+$ uv sync
+$ uv run main.py
 ```
 
-需要 FFmpeg（`apt install ffmpeg`；Windows 把 `ffmpeg.exe` 放进项目根目录的 `ffmpeg/`）。长期运行用 `douyinlive-status.service`。**修改 Python 后端要重启服务，只刷新网页不会加载新逻辑**，建议挑不影响录制的时间重启。
+## 本机部署
+
+| 内容 | 位置 |
+| --- | --- |
+| 线上代码 | `/srv/apps/douyinlive-recorder/current` → `releases/<版本>` |
+| 服务 | `douyinlive-status.service`（系统服务，不要前台跑 `main.py`） |
+| 配置、日志、弹幕索引 | `/srv/apps/douyinlive-recorder/{config,logs,data}`，发布目录里的同名目录链接到这里 |
+| 视频和弹幕原始文件 | `/srv/nas/Record` |
+| 访问地址 | 外网 `dy` 子域（经 Authelia） |
+
+```console
+$ systemctl status douyinlive-status.service
+$ journalctl -u douyinlive-status.service -n 100
+```
+
+本目录是源码，修改后要建发布副本、切换 `current` 再重启服务。**修改 Python 后端要重启服务，只刷新网页不会加载新逻辑**，挑不影响录制的时间重启。
 
 ## Web UI
 
@@ -80,7 +95,7 @@ http://xhslink.com/xxxxxx                  (小红书分享短链)
 
 ## 弹幕录制
 
-依赖 MIT 许可的 [jwwsjlm/douyinLive](https://github.com/jwwsjlm/douyinLive) 伴随服务，端口只发布到本机回环：
+依赖 MIT 许可的 [jwwsjlm/douyinLive](https://github.com/jwwsjlm/douyinLive) 伴随服务，端口只发布到本机回环（本机用 `/srv/apps/douyinlive-danmaku/compose.yaml` 部署）：
 
 ```bash
 docker run -d --name douyinlive-danmaku --restart unless-stopped \
@@ -99,39 +114,7 @@ docker run -d --name douyinlive-danmaku --restart unless-stopped \
 - **JSONL 是原始记录，要长期保留**；XML 等格式都从它派生。
 - 逐行写入并刷新，异常退出最多丢最后半行。伴随服务断线或解析失败只记日志并退避重连，不影响视频录制。文件以排他模式创建，同名文件已存在时放弃弹幕、继续录视频，不会截断原文件。
 
-### JSONL schema v1
-
-schema 名 `douyin-live-recorder-ui.danmaku`，`version` 为 `1`。首行是 `metadata`，之后每行一个 `chat`，UTF-8、紧凑 JSON。
-
-- `metadata` 必需字段：`type`、`schema`、`version`、`platform`、`room_identifier`、`recording_started_at_unix_ms`、`time_units`。
-- `chat` 必需字段：`type`、`sequence`、`method`、`offset_ms`、`received_at_unix_ms`、`user.id`、`user.nickname`、`content`。
-
-时间字段的含义：
-
-- `recording_started_at_unix_ms`：FFmpeg 子进程启动成功时的 UTC 毫秒，同时记下单调时钟原点。
-- `offset_ms`：相对单调时钟原点的毫秒，不受校时影响。
-- `received_at_unix_ms`：收到消息时的系统时钟 UTC 毫秒。所以 `received_at - recording_started` 不一定等于 `offset_ms`。
-
-其他约定：毫秒值向下取整；`sequence` 从 1 严格递增；`method` 固定为 `WebcastChatMessage`；缺失的用户 ID 或昵称存 `null`，不伪造；没有 `content` 的消息跳过，空字符串保留。
-
-```jsonl
-{"type":"metadata","schema":"douyin-live-recorder-ui.danmaku","version":1,"platform":"douyin","room_identifier":"123456","recording_started_at_unix_ms":1787104800123,"time_units":{"recording_started_at_unix_ms":"milliseconds since Unix epoch UTC","received_at_unix_ms":"milliseconds since Unix epoch UTC","offset_ms":"milliseconds from recording start"}}
-{"type":"chat","sequence":1,"method":"WebcastChatMessage","offset_ms":2345,"received_at_unix_ms":1787104802468,"user":{"id":"987654","nickname":"示例用户"},"content":"你好"}
-```
-
-### 转换为 Bilibili XML
-
-```bash
-uv run python scripts/danmaku_convert.py name.danmaku.jsonl                 # 输出 name.xml
-uv run python scripts/danmaku_convert.py name.danmaku.jsonl --overwrite     # 覆盖已有目标
-uv run python scripts/danmaku_convert.py name.danmaku.jsonl --output x.xml  # 指定输出
-uv run python scripts/danmaku_convert.py name.danmaku.jsonl --recover-truncated-tail
-```
-
-- 默认严格：任何坏行都报行号并以非零状态退出，不覆盖目标。空白行跳过，未知扩展字段允许。
-- `--recover-truncated-tail` 只忽略“最后一行、没有换行、JSON 不完整”的尾部，其他坏行照样失败。
-- 输入输出不能是同一文件（包括符号链接、硬链接），先写临时文件再原子发布。
-- XML 文本为 `nickname: content`；`null` 只在 XML 里显示成 `0` / `匿名用户`，不回写 JSONL。
+文件格式（schema v1）和转成 Bilibili XML 的方法见 [弹幕 JSONL 格式与转换](docs/danmaku.md)。
 
 ## 弹幕检索与录像定位
 
@@ -145,7 +128,16 @@ uv run python scripts/danmaku_convert.py name.danmaku.jsonl --recover-truncated-
 
 **访问安全**：沿用控制面板的访问边界，没有登录系统，只在可信局域网使用；公网访问前要配反向代理认证和 HTTPS。接口只读录制目录内的指定视频格式，拒绝路径穿越、越界软链接和已排除的 CloudDrive 目录。
 
-## 代码结构
+## 开发
+
+测试在 `tests/`：
+
+```console
+$ uv run python -m unittest discover -s tests
+```
+
+目录结构：
+
 
 ```text
 main.py              装配：banner → ffmpeg → 主循环
@@ -164,6 +156,6 @@ webui/static/        Vue 3 单页前端
 scripts/danmaku_convert.py  JSONL → Bilibili XML
 ```
 
-## 致谢
+## 许可证与致谢
 
-基于 [ihmily/DouyinLiveRecorder](https://github.com/ihmily/DouyinLiveRecorder) 修改，感谢原作者及所有贡献者。
+基于 [ihmily/DouyinLiveRecorder](https://github.com/ihmily/DouyinLiveRecorder) 修改，许可证见 [LICENSE](LICENSE)。感谢原作者及所有贡献者。
