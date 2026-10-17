@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime
 import glob
+import json
 import os
 import queue
 import random
@@ -17,6 +18,8 @@ import signal
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.request
 from collections import deque
 from pathlib import Path
 from typing import Callable, Literal, TextIO
@@ -101,6 +104,29 @@ def _startup_info() -> subprocess.STARTUPINFO | None:
     return info
 
 
+def notify_file_ready(file_path: str, settings: Settings) -> None:
+    """转码完成后通知外部归档服务，原文件已可移走；失败只记日志，不影响录制。"""
+    url = settings.file_ready_webhook
+    if not url:
+        return
+    body = json.dumps({"path": os.path.abspath(file_path)}).encode()
+    # 回调地址是本机服务，不走录制用的代理。
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    request = urllib.request.Request(url, data=body, method="POST",
+                                     headers={"Content-Type": "application/json"})
+    for attempt in range(3):
+        try:
+            with opener.open(request, timeout=10):
+                return
+        except Exception as e:
+            error = e
+            if isinstance(e, urllib.error.HTTPError):
+                e.close()
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+    logger.warning(f"转码完成回调失败，等定时归档处理: {file_path}: {error}")
+
+
 def converts_mp4(converts_file_path: str, settings: Settings) -> None:
     try:
         if not (os.path.exists(converts_file_path) and os.path.getsize(converts_file_path) > 0):
@@ -131,6 +157,8 @@ def converts_mp4(converts_file_path: str, settings: Settings) -> None:
             time.sleep(1)
             if os.path.exists(converts_file_path):
                 os.remove(converts_file_path)
+        else:
+            notify_file_ready(converts_file_path, settings)
     except subprocess.CalledProcessError as e:
         logger.error(f"Error occurred during conversion: {e}")
     except Exception as e:

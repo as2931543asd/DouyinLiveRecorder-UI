@@ -78,6 +78,9 @@ class Settings:
             raise ValueError("[录制设置] 视频保存格式必须是 TS、MKV、FLV 或 MP4")
         use_proxy = boolean("是否使用代理ip(是/否)", "是")
         proxy_addr = get("代理地址", "")
+        file_ready_webhook = get("转码完成回调地址", "")
+        if file_ready_webhook and not file_ready_webhook.startswith(("http://", "https://")):
+            raise ValueError("[录制设置] 转码完成回调地址必须以 http:// 或 https:// 开头，留空表示不回调")
         return {
             "video_save_path": get("直播保存路径(不填则默认)", ""),
             "folder_by_author": boolean("保存文件夹是否以作者区分", "是"),
@@ -103,6 +106,7 @@ class Settings:
             "converts_to_mp4": boolean("录制完成后自动转为mp4格式", "否"),
             "converts_to_h264": boolean("mp4格式重新编码为h264", "否"),
             "delete_origin_file": boolean("追加格式后删除原文件", "否"),
+            "file_ready_webhook": file_ready_webhook,
             "split_video_by_time": boolean("分段录制是否开启", "否"),
             "split_time": str(integer("视频分段时间(秒)", 1800)),
             "auto_restart_on_corrupt": boolean("自动检测花屏并重录", "是"),
