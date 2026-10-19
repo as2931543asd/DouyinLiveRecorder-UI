@@ -81,6 +81,11 @@ class Settings:
         file_ready_webhook = get("转码完成回调地址", "")
         if file_ready_webhook and not file_ready_webhook.startswith(("http://", "https://")):
             raise ValueError("[录制设置] 转码完成回调地址必须以 http:// 或 https:// 开头，留空表示不回调")
+        converts_to_mp4 = boolean("录制完成后自动转为mp4格式", "否")
+        record_to_temp_dir = boolean("录制中文件放到TempRec子目录", "否")
+        # 只有转出的 MP4 会移出 TempRec；不转码的格式会一直留在里面。
+        if record_to_temp_dir and not (converts_to_mp4 and save_type in {"TS", "FLV"}):
+            raise ValueError("[录制设置] 录制中文件放到TempRec子目录 需要保存格式为 TS 或 FLV，并开启录制完成后自动转为mp4格式")
         return {
             "video_save_path": get("直播保存路径(不填则默认)", ""),
             "folder_by_author": boolean("保存文件夹是否以作者区分", "是"),
@@ -103,7 +108,8 @@ class Settings:
             "loop_time": boolean("是否显示循环秒数", "否"),
             "show_url": boolean("是否显示直播源地址", "否"),
             "disk_space_limit": number("录制空间剩余阈值(gb)", 1.0),
-            "converts_to_mp4": boolean("录制完成后自动转为mp4格式", "否"),
+            "converts_to_mp4": converts_to_mp4,
+            "record_to_temp_dir": record_to_temp_dir,
             "converts_to_h264": boolean("mp4格式重新编码为h264", "否"),
             "delete_origin_file": boolean("追加格式后删除原文件", "否"),
             "file_ready_webhook": file_ready_webhook,

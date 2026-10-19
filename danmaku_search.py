@@ -26,6 +26,8 @@ DEFAULT_ROOT = Path("/srv/nas/Record")
 EXCLUDED_DIRECTORY = Path("/srv/nas/CloudDrive")
 DANMAKU_SUFFIX = ".danmaku.jsonl"
 PLATFORM_DIRECTORY_NAMES = {"抖音直播"}
+# 录制中的文件放在平台目录下的这个子目录，录完再移出。名字固定：Jellyfin 内置忽略 **/TempRec/**。
+TEMP_RECORDING_DIRECTORY = "TempRec"
 FILENAME_TIME_RE = re.compile(r"_(?=\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(?:_|$))")
 
 SCOPE_FIELDS = {
@@ -177,7 +179,7 @@ def anchor_from_filename(path: Path) -> str:
 
 def infer_anchor(path: Path, root: Path) -> str:
     """Infer the broadcaster from the standard recording directory layout."""
-    parts = path.parts
+    parts = tuple(part for part in path.parts if part != TEMP_RECORDING_DIRECTORY)
     for index, part in enumerate(parts[:-1]):
         if part in PLATFORM_DIRECTORY_NAMES and index + 1 < len(parts) - 1:
             return parts[index + 1]

@@ -27,10 +27,13 @@ from typing import Callable, Literal, TextIO
 RecordResult = Literal["stop", "corrupt_restart", "ended", "finished"]
 SubprocessStartedCallback = Callable[[float, float], None]
 
+from danmaku_search import TEMP_RECORDING_DIRECTORY
+
 from . import live_history, platforms, runtime, special_monitor, spider, stream, utils
 from .config_loader import Settings
 from .danmaku import DanmakuRecorder, danmaku_jsonl_path, extract_room_identifier
 from .logger import logger
+from .video_locator import segment_list_path
 
 # 文件名里不允许出现的字符
 _RSTR = r"[\/\\\:\*\？?\"\<\>\|&#.。,， ~！· ]"
@@ -127,11 +130,33 @@ def notify_file_ready(file_path: str, settings: Settings) -> None:
     logger.warning(f"转码完成回调失败，等定时归档处理: {file_path}: {error}")
 
 
+def published_path(path: str | Path) -> Path:
+    """录制中文件对应的成品路径：去掉路径里的 TempRec 这一层；不在 TempRec 里的原样返回。"""
+    parts = Path(path).parts
+    if TEMP_RECORDING_DIRECTORY not in parts:
+        return Path(path)
+    index = parts.index(TEMP_RECORDING_DIRECTORY)
+    return Path(*parts[:index], *parts[index + 1:])
+
+
+def publish_sidecars(save_file_path: str) -> None:
+    """一场录制转码完后，把弹幕和分段清单移到成品旁边，弹幕检索按同目录找视频。"""
+    for path in (danmaku_jsonl_path(save_file_path), segment_list_path(save_file_path)):
+        target = published_path(path)
+        if target != path and path.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(path, target)
+
+
 def converts_mp4(converts_file_path: str, settings: Settings) -> None:
     try:
         if not (os.path.exists(converts_file_path) and os.path.getsize(converts_file_path) > 0):
             return
 
+        mp4 = published_path(converts_file_path.rsplit(".", maxsplit=1)[0] + ".mp4")
+        mp4.parent.mkdir(parents=True, exist_ok=True)
+        # 先写隐藏临时文件再改名：Jellyfin 忽略 "." 开头的文件，只看到写完的 MP4。
+        temp = str(mp4.with_name(f".{mp4.name}.part"))
         if settings.converts_to_h264:
             logger.info("正在转码为 MP4 格式并重新编码为 h264")
             ffmpeg_command = [
@@ -141,7 +166,7 @@ def converts_mp4(converts_file_path: str, settings: Settings) -> None:
                 "-crf", "23",
                 "-vf", "format=yuv420p",
                 "-c:a", "copy",
-                "-f", "mp4", converts_file_path.rsplit(".", maxsplit=1)[0] + ".mp4",
+                "-f", "mp4", "-y", temp,
             ]
         else:
             logger.info("正在转码为 MP4 格式")
@@ -149,9 +174,15 @@ def converts_mp4(converts_file_path: str, settings: Settings) -> None:
                 "ffmpeg", "-i", converts_file_path,
                 "-c:v", "copy",
                 "-c:a", "copy",
-                "-f", "mp4", converts_file_path.rsplit(".", maxsplit=1)[0] + ".mp4",
+                "-f", "mp4", "-y", temp,
             ]
-        subprocess.check_output(ffmpeg_command, stderr=subprocess.STDOUT, startupinfo=_startup_info())
+        try:
+            subprocess.check_output(ffmpeg_command, stderr=subprocess.STDOUT, startupinfo=_startup_info())
+        except BaseException:
+            if os.path.exists(temp):
+                os.remove(temp)
+            raise
+        os.replace(temp, mp4)
 
         if settings.delete_origin_file:
             time.sleep(1)
@@ -179,9 +210,17 @@ def converts_segments_mp4(segment_template: str, settings: Settings) -> None:
         converts_mp4(seg, settings)
 
 
+def _convert_and_publish(save_file_path: str, segmented: bool, settings: Settings) -> None:
+    (converts_segments_mp4 if segmented else converts_mp4)(save_file_path, settings)
+    try:
+        publish_sidecars(save_file_path)
+    except OSError as e:
+        logger.error(f"弹幕和分段清单移出 TempRec 失败: {save_file_path}: {e}")
+
+
 def _spawn_convert(save_file_path: str, segmented: bool, settings: Settings) -> None:
-    target = converts_segments_mp4 if segmented else converts_mp4
-    threading.Thread(target=target, args=(save_file_path, settings), daemon=True).start()
+    threading.Thread(target=_convert_and_publish, args=(save_file_path, segmented, settings),
+                     daemon=True).start()
 
 
 def _stop_requested(record_url: str) -> bool:
@@ -516,7 +555,6 @@ def _record_once(
         ffmpeg_command.extend(_segment_args(record_save_type, settings.split_time))
         if getattr(settings, "record_danmaku", False) and danmaku_room_identifier:
             # 实际切片受关键帧影响，不能用 split_time * 段号还原边界。
-            from .video_locator import segment_list_path
             ffmpeg_command.extend([
                 "-segment_list", str(segment_list_path(save_file_path)),
                 "-segment_list_type", "csv", "-segment_list_size", "0",
@@ -605,6 +643,9 @@ def _build_full_path(
             else:
                 full_path = f"{base}{platform}"
         full_path = full_path.replace("\\", "/")
+        if settings.record_to_temp_dir:
+            # 录制中放平台目录下的 TempRec，转码完成后由 converts_mp4 移回原位置。
+            full_path = f"{full_path}/{TEMP_RECORDING_DIRECTORY}"
 
         if settings.folder_by_author:
             full_path = f"{full_path}/{anchor_name}"

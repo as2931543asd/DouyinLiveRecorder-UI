@@ -66,7 +66,8 @@ http://xhslink.com/xxxxxx                  (小红书分享短链)
 - 网络请求并发上限、录制根目录、弹幕检索根目录在启动时绑定，改了要重启。
 - 主播列表的增删改用同一把锁和“同目录临时文件 + 原子替换”写入，失败时保留原文件。手动编辑时用编辑器的原子保存；程序的锁管不到外部编辑器。
 - `转码完成回调地址`：每段录像转完 MP4 后，向这个地址 POST `{"path": "<原文件绝对路径>"}`，失败重试 3 次后只记日志，不影响录制；留空不回调，开了 `追加格式后删除原文件` 时也不回调。本机填 `http://127.0.0.1:8791/file`，由 nas-ops 的录播归档接收，立即把原文件移到备份目录（见 `/root/workplace/nas-ops/README.md`）。
-- **重启服务会留下没转码的分段**：收到停止信号时进程直接退出，正在录的那一段只有 `.ts`，没有 `.mp4` 和回调，归档也不会移走它。重启后要手动补转码，在发布目录执行：`.venv/bin/python -B -c "import src.config_loader as c, src.recorder as r; r.converts_mp4('<ts 路径>', c.Settings('config/config.ini'))"`，转完会照常回调。
+- `录制中文件放到TempRec子目录`：开启后录制中的 `.ts`、`.danmaku.jsonl`、`.segments.csv` 写在 `<平台目录>/TempRec/<主播>/`。每段转出的 MP4 先以 `.` 开头的临时文件写到 `<平台目录>/<主播>/`，写完再改成正式文件名；整场转完后，弹幕和分段清单也移过去。原始 `.ts` 留在 `TempRec`，等归档移走。这样做是因为 Jellyfin 内置忽略 `**/TempRec/**` 和隐藏文件；如果录制中的文件写在库目录里，持续写入会让 Jellyfin 一直推迟刷新，整个录播库都不会更新。目录名固定为 `TempRec`，开启时必须同时开启 `录制完成后自动转为mp4格式`，保存格式只能是 TS 或 FLV，否则配置校验不通过。没有转码的录像（比如异常结束的）会留在 `TempRec`。
+- **重启服务会留下没转码的分段**：收到停止信号时进程直接退出，正在录的那一段只有 `.ts`，没有 `.mp4` 和回调，归档也不会移走它。重启后要手动补转码，在发布目录执行：`.venv/bin/python -B -c "import src.config_loader as c, src.recorder as r; r.converts_mp4('<ts 路径>', c.Settings('config/config.ini'))"`，转完会照常回调，MP4 会移出 `TempRec`。弹幕和分段清单再用 `r.publish_sidecars('<分段模板，如 .../主播_2026-10-17_19-15-37_%03d.ts>')` 移出。
 
 ### 花屏重录
 

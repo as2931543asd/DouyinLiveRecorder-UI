@@ -94,6 +94,10 @@ class DanmakuSearchTests(unittest.TestCase):
         self.assertEqual(return_code, 0)
         self.assertEqual(json.loads(output_lines[0])["matched_fields"], ["viewer"])
 
+    def test_anchor_skips_temp_recording_directory(self) -> None:
+        path = self.root / "抖音直播" / "TempRec" / "主播Beta" / "主播Beta_2026-08-23_01-02-03.danmaku.jsonl"
+        self.assertEqual(danmaku_search.infer_anchor(path, self.root), "主播Beta")
+
     def test_excluded_directory_is_always_rejected(self) -> None:
         stats = danmaku_search.SearchStats()
         with self.assertRaisesRegex(ValueError, "拒绝搜索已排除目录"):
