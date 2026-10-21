@@ -141,7 +141,6 @@ $ uv run python -m unittest discover -s tests
 
 目录结构：
 
-
 ```text
 main.py              装配：banner → ffmpeg → 主循环
 src/runtime.py       跨线程共享状态、锁、常驻 asyncio 事件循环

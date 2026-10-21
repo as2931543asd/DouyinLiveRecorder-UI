@@ -1,11 +1,13 @@
 # 通用通知接口 v1
 
+录制服务对外提供的开播通知接口：主播被设为“特别监控”后，开播时生成 `live.started` 事件，由独立的通知适配器（如 QQ 群机器人）拉取、发送并确认。录制核心本身不发任何通知。开启方法见 [README](../README.md#开播通知)。
+
 ## 分层
 
 - **录制核心**：成功抓取直播状态后产生标准事件，不包含 QQ/Hermes SDK、收件人、凭据或任何发送网络请求。
 - **特别监控**：WebUI 星标/筛选及 `/api/streamers/special-monitor` 管理订阅；状态存储在 `config/special_monitor.json`，原子提交，重启保留。
 - **通知适配器**：通过以下 HTTP 契约拉取事件，按自己的配置发送，成功后确认。每个独立消费者（例如 `mail-home`、`webhook-office`）有自己的确认记录，不互相消费掉事件。
-- **首个实现**：同级 `qq-douyin-recorder-plugin` 的 `notifications.py`。其 `NotificationPump` 依赖 `NotificationSender.send(event) -> bool` 异步协议；`QQGroupSender` 只是第一个发送实现。邮件/Webhook 可以实现此协议，也可以在独立进程中直接实现下面的 HTTP 契约，不需要依赖 Hermes。
+- **首个实现**：nas-ops 里 `plugins/qq-douyin-recorder-plugin` 的 `notifications.py`。其 `NotificationPump` 依赖 `NotificationSender.send(event) -> bool` 异步协议；`QQGroupSender` 只是第一个发送实现。邮件/Webhook 可以实现此协议，也可以在独立进程中直接实现下面的 HTTP 契约，不需要依赖 Hermes。
 
 核心项目不配置默认群、不读取机器人配置、不向所有渠道广播。没有运行适配器时，只生成事件，不会实际发送。
 
@@ -69,6 +71,6 @@ Content-Type: application/json
 - 延迟取决于现有直播轮询周期、失败退避，再加适配器轮询周期；不承诺秒级通知。
 - 沿用项目现有的无认证 WebUI/API，仅限可信网络/本机调用；消费者 ID 不是密码。对外暴露前应在反向代理增加认证与 TLS。事件与 ACK 接口不允许代填机器人令牌或任意发送目的地。
 
-## 部署
+## 发布
 
-核心代码更新需在允许中断录制时重启 `douyinlive-status.service`。浏览器刷新后出现星标开关；具体发送端单独部署/重载。Hermes QQ 的群选择、主动消息权限及发送失败日志见插件自己的 README。
+核心代码更新要在允许中断录制时重启 `douyinlive-status.service`，浏览器刷新后出现星标开关。发送端单独部署和重载；QQ 群机器人的群选择、主动消息权限和发送失败日志见 [QQ 抖音录制机器人](../../nas-ops/plugins/qq-douyin-recorder-plugin/README.md)。
